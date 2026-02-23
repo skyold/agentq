@@ -1126,8 +1126,11 @@ def execute_hyper_ai_tool(db: Session, tool_name: str, arguments: Dict[str, Any]
                 api_key=arguments.get("api_key")
             )
 
-        # Sub-agent tools
+        # Sub-agent tools are handled directly in hyper_ai_service.py main loop
+        # via _execute_tool_with_progress() which uses yield from for progress events.
+        # This branch should not be reached but kept as safety fallback.
         elif tool_name in ("call_prompt_ai", "call_program_ai", "call_signal_ai", "call_attribution_ai"):
+            logger.warning(f"[execute_hyper_ai_tool] Sub-agent {tool_name} reached fallback path")
             return execute_subagent_tool(db, tool_name, arguments, user_id=user_id)
 
         else:

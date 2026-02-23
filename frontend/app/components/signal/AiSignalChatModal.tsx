@@ -421,9 +421,17 @@ export default function AiSignalChatModal({
         content: content,
         signalConfigs: signalConfigs,
       })
+      if (data.compression_points) setCompressionPoints(data.compression_points as CompressionPoint[])
       // Convert streaming analysisLog to stored formats for immediate display
+      // Prefer backend done event data over local conversion
       setMessages(prev => prev.map(m => {
         if (m.id !== msgId) return m
+        const tcLog = data.tool_calls_log as ToolCallLogEntry[] | null
+        const rSnap = data.reasoning_snapshot as string | null
+        if (tcLog || rSnap) {
+          return { ...m, isStreaming: false, statusText: undefined, toolCallsLog: tcLog || [], reasoningSnapshot: rSnap }
+        }
+        // Fallback: convert from streaming analysisLog
         const log = m.analysisLog || []
         const toolCallsLog = log
           .filter(e => e.type === 'tool_call')

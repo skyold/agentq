@@ -1456,6 +1456,10 @@
     "connectionLost": "连接丢失",
     "compressionPoint": "上下文已压缩",
     "contextWarning": "上下文剩余: {{percent}}% · 即将压缩",
+    "subagentRound": "轮次",
+    "subagentWorking": "执行中",
+    "subagentToolCalls": "次工具调用",
+    "subagentProcessing": "处理中",
     "onboarding": {
       "welcome": "欢迎使用 Hyper Alpha Arena",
       "configureAi": "配置 Hyper AI 轻松上手",

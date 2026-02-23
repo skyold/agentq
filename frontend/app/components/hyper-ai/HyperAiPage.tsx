@@ -599,6 +599,8 @@ export default function HyperAiPage() {
     let content = ''
     let reasoning = ''
     let toolCalls: ToolCallEntry[] = []
+    let doneToolCallsLog: ToolCallLogEntry[] | null = null
+    let doneReasoningSnapshot: string | null = null
     let offset = 0
     let isInterrupted = false
     let interruptedRound = 0
@@ -668,6 +670,35 @@ export default function HyperAiPage() {
                   }
                 : m
             ))
+          } else if (eventType === 'subagent_progress') {
+            const agent = data.subagent || 'Agent'
+            let statusMsg = ''
+            // Build a toolCalls entry for the history list
+            const progressEntry: any = { type: 'subagent_progress', subagent: agent, step: data.step }
+
+            if (data.step === 'reasoning') {
+              statusMsg = `${agent}: ${t('hyperAi.subagentProcessing', 'processing')}...`
+              progressEntry.content = data.content || ''
+            } else if (data.step === 'tool_call') {
+              statusMsg = `${agent}: → ${data.tool || ''}`
+              progressEntry.tool = data.tool || ''
+            } else if (data.step === 'tool_result') {
+              statusMsg = `${agent}: ← ${data.tool || ''}`
+              progressEntry.tool = data.tool || ''
+            } else if (data.step === 'tool_round') {
+              const roundInfo = data.round && data.max_rounds ? ` ${data.round}/${data.max_rounds}` : (data.round ? ` ${data.round}` : '')
+              statusMsg = `${agent}: ${t('hyperAi.subagentRound', 'round')}${roundInfo}...`
+              progressEntry.round = data.round
+              progressEntry.max_rounds = data.max_rounds
+            } else {
+              statusMsg = `${agent}: ${t('hyperAi.subagentProcessing', 'processing')}...`
+            }
+
+            setMessages(prev => prev.map((m, idx) =>
+              idx === prev.length - 1 && m.isStreaming
+                ? { ...m, statusText: statusMsg, toolCalls: [...(m.toolCalls || []), progressEntry] }
+                : m
+            ))
           } else if (eventType === 'retry') {
             // API retry event - show retry status
             const attempt = data.attempt || 2
@@ -691,6 +722,9 @@ export default function HyperAiPage() {
             if (data.conversation_id) setCurrentConvId(data.conversation_id)
             if (data.token_usage) setTokenUsage(data.token_usage)
             if (data.compression_points) setCompressionPoints(data.compression_points)
+            // Prefer backend done event data (has full result content, not truncated)
+            if (data.tool_calls_log) doneToolCallsLog = data.tool_calls_log
+            if (data.reasoning_snapshot) doneReasoningSnapshot = data.reasoning_snapshot
           }
         }
 
@@ -702,8 +736,8 @@ export default function HyperAiPage() {
         }
       }
 
-      // Finalize message - convert streaming toolCalls to stored format
-      const toolCallsLog = toolCalls.filter(tc => tc.type === 'tool_call' || tc.type === 'tool_result')
+      // Finalize message - prefer backend done event data, fallback to streaming conversion
+      const localToolCallsLog = toolCalls.filter(tc => tc.type === 'tool_call' || tc.type === 'tool_result')
         .reduce((acc: ToolCallLogEntry[], tc) => {
           if (tc.type === 'tool_call' && tc.name) {
             acc.push({ tool: tc.name, args: tc.args || {}, result: '' })
@@ -716,14 +750,16 @@ export default function HyperAiPage() {
           }
           return acc
         }, [])
+      const finalToolCallsLog = doneToolCallsLog || (localToolCallsLog.length > 0 ? localToolCallsLog : null)
+      const finalReasoning = doneReasoningSnapshot || reasoning || undefined
 
       setMessages(prev => prev.map((m, idx) =>
         idx === prev.length - 1 && m.isStreaming
           ? {
               ...m,
               content: content || m.content,
-              reasoning_snapshot: reasoning || undefined,
-              tool_calls_log: toolCallsLog.length > 0 ? JSON.stringify(toolCallsLog) : undefined,
+              reasoning_snapshot: finalReasoning,
+              tool_calls_log: finalToolCallsLog ? JSON.stringify(finalToolCallsLog) : undefined,
               isStreaming: false,
               statusText: undefined,
               toolCalls: undefined,
@@ -987,7 +1023,7 @@ const MessageBubble = memo(function MessageBubble({
         {/* Real-time tool calls during streaming */}
         {message.isStreaming && message.toolCalls && message.toolCalls.length > 0 && (
           <div className="mb-2 text-xs bg-background/50 rounded p-2 max-h-32 overflow-y-auto">
-            {message.toolCalls.slice(-5).map((entry, idx) => (
+            {message.toolCalls.slice(-8).map((entry, idx) => (
               <div key={idx} className="mb-1 last:mb-0">
                 {entry.type === 'tool_call' && (
                   <span className="text-blue-500">→ {entry.name}</span>
@@ -997,6 +1033,18 @@ const MessageBubble = memo(function MessageBubble({
                 )}
                 {entry.type === 'reasoning' && (
                   <span className="text-gray-500 italic">{(entry.content || '').slice(0, 100)}...</span>
+                )}
+                {entry.type === 'subagent_progress' && entry.step === 'reasoning' && (
+                  <span className="text-gray-500 italic">[{entry.subagent}] {(entry.content || '').slice(0, 100)}...</span>
+                )}
+                {entry.type === 'subagent_progress' && entry.step === 'tool_call' && (
+                  <span className="text-blue-400">[{entry.subagent}] → {entry.tool}</span>
+                )}
+                {entry.type === 'subagent_progress' && entry.step === 'tool_result' && (
+                  <span className="text-green-400">[{entry.subagent}] ← {entry.tool}: done</span>
+                )}
+                {entry.type === 'subagent_progress' && entry.step === 'tool_round' && (
+                  <span className="text-orange-400">[{entry.subagent}] {t('hyperAi.subagentRound', 'round')}{entry.round ? ` ${entry.round}${entry.max_rounds ? `/${entry.max_rounds}` : ''}` : ''}</span>
                 )}
               </div>
             ))}

@@ -40,6 +40,7 @@ from services.ai_decision_service import (
     build_llm_headers,
     is_reasoning_model,
     extract_reasoning,
+    convert_tools_to_anthropic,
 )
 from services.ai_stream_service import (
     get_buffer_manager,
@@ -49,6 +50,7 @@ from services.ai_stream_service import (
 )
 from services.hyper_ai_llm_providers import get_provider, get_all_providers
 from services.hyper_ai_tools import HYPER_AI_TOOLS, execute_hyper_ai_tool
+from services.hyper_ai_subagents import execute_subagent_tool
 from utils.encryption import decrypt_private_key
 
 logger = logging.getLogger(__name__)
@@ -521,18 +523,15 @@ def _build_memory_context(db: Session) -> str:
     return "\n".join(parts)
 
 
-def _convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
-    """Convert OpenAI format tools to Anthropic format."""
-    anthropic_tools = []
-    for tool in tools:
-        if tool.get("type") == "function":
-            func = tool["function"]
-            anthropic_tools.append({
-                "name": func["name"],
-                "description": func.get("description", ""),
-                "input_schema": func.get("parameters", {"type": "object", "properties": {}})
-            })
-    return anthropic_tools
+
+# Sub-agent tool names — these return generators instead of strings
+SUBAGENT_TOOL_NAMES = {"call_prompt_ai", "call_program_ai", "call_signal_ai", "call_attribution_ai"}
+
+
+# Sub-agent tools are executed via execute_subagent_tool (generator, yields progress events).
+# Normal tools are executed via execute_hyper_ai_tool (plain function, returns string).
+# These two paths MUST stay separate - never wrap them in a single function that contains
+# both yield and return, because Python turns ANY function with yield into a generator.
 
 
 def stream_chat_response(
@@ -542,8 +541,19 @@ def stream_chat_response(
 ) -> Generator[str, None, None]:
     """
     Stream chat response from LLM with tool calling support.
-    Uses non-streaming API calls internally, yields SSE events for frontend.
-    Based on ai_program_service.py pattern for stability.
+
+    ARCHITECTURE NOTE: This is a generator that yields SSE-formatted strings.
+    It does NOT stream directly to the frontend. Instead:
+    - start_chat_task() wraps this generator and passes it to run_ai_task_in_background()
+    - run_ai_task_in_background() runs this in a background thread, parsing each yielded
+      SSE event and storing it in StreamBufferManager (in-memory buffer)
+    - Frontend polls /api/ai-stream/{task_id}?offset=N to pull events from the buffer
+    - This means ANY event yielded here automatically reaches the frontend via polling,
+      and survives frontend disconnects (buffer has 15-min expiry)
+
+    For sub-agent calls (call_*_ai), the tool execution returns a generator instead of
+    a string. This generator yields subagent_progress events (forwarded to frontend)
+    and finally yields the result string for the main LLM to continue reasoning.
     """
     # Get LLM config
     llm_config = get_llm_config(db)
@@ -597,7 +607,7 @@ def stream_chat_response(
 
             # Use unified payload builder (see build_llm_payload in ai_decision_service)
             if api_format == "anthropic":
-                anthropic_tools = _convert_tools_to_anthropic(tools) if tools and not is_last_round else None
+                anthropic_tools = convert_tools_to_anthropic(tools) if tools and not is_last_round else None
                 body = build_llm_payload(
                     model=model,
                     messages=messages,
@@ -700,12 +710,16 @@ def stream_chat_response(
                 content_blocks = resp_json.get("content", [])
                 tool_uses = []
                 content = ""
+                reasoning_content = ""
                 for block in content_blocks:
                     if block.get("type") == "text":
                         content += block.get("text", "")
                     elif block.get("type") == "tool_use":
                         tool_uses.append(block)
-                reasoning_content = ""  # Anthropic doesn't have reasoning_content
+                    elif block.get("type") == "thinking":
+                        t = block.get("thinking", "")
+                        if t:
+                            reasoning_content += t
                 api_tool_calls = tool_uses
             else:
                 # OpenAI format
@@ -739,7 +753,10 @@ def stream_chat_response(
                             fn_args = {}
 
                         yield format_sse_event("tool_call", {"name": fn_name, "args": fn_args})
-                        tool_result = execute_hyper_ai_tool(db, fn_name, fn_args, user_id=1)
+                        if fn_name in SUBAGENT_TOOL_NAMES:
+                            tool_result = yield from execute_subagent_tool(db, fn_name, fn_args, user_id=1)
+                        else:
+                            tool_result = execute_hyper_ai_tool(db, fn_name, fn_args, user_id=1)
                         tool_calls_log.append({
                             "tool": fn_name,
                             "args": fn_args,
@@ -776,7 +793,10 @@ def stream_chat_response(
                             fn_args = {}
 
                         yield format_sse_event("tool_call", {"name": fn_name, "args": fn_args})
-                        tool_result = execute_hyper_ai_tool(db, fn_name, fn_args, user_id=1)
+                        if fn_name in SUBAGENT_TOOL_NAMES:
+                            tool_result = yield from execute_subagent_tool(db, fn_name, fn_args, user_id=1)
+                        else:
+                            tool_result = execute_hyper_ai_tool(db, fn_name, fn_args, user_id=1)
                         tool_calls_log.append({
                             "tool": fn_name,
                             "args": fn_args,
@@ -830,7 +850,9 @@ def stream_chat_response(
         done_data = {
             "conversation_id": conversation_id,
             "content": final_content,
-            "tool_calls_count": len(tool_calls_log)
+            "tool_calls_count": len(tool_calls_log),
+            "tool_calls_log": tool_calls_log if tool_calls_log else None,
+            "reasoning_snapshot": reasoning_snapshot if reasoning_snapshot else None,
         }
         try:
             from services.ai_context_compression_service import (

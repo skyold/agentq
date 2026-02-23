@@ -448,9 +448,25 @@ export default function AiPromptChatModal({
       if (content) onUpdate({ content })
       if (data.conversation_id) onUpdate({ conversationId: data.conversation_id as number })
       if (data.prompt_result) onUpdate({ promptResult: data.prompt_result as string })
-      setMessages(prev => prev.map(m =>
-        m.id === msgId ? { ...m, isStreaming: false } : m
-      ))
+      if (data.compression_points) setCompressionPoints(data.compression_points as CompressionPoint[])
+      // Convert streaming toolCalls to stored formats for immediate display after completion
+      setMessages(prev => prev.map(m => {
+        if (m.id !== msgId) return m
+        const tcLog = data.tool_calls_log as ToolCallLogEntry[] | null
+        const rSnap = data.reasoning_snapshot as string | null
+        let toolCallsLog = tcLog || m.toolCallsLog
+        let reasoningSnapshot = rSnap || m.reasoningSnapshot
+        if (!toolCallsLog && m.toolCalls && m.toolCalls.length > 0) {
+          toolCallsLog = m.toolCalls
+            .filter(e => e.type === 'tool_call')
+            .map(e => ({ tool: e.name || 'unknown', args: e.args || {}, result: '' }))
+        }
+        if (!reasoningSnapshot && m.toolCalls) {
+          const parts = m.toolCalls.filter(e => e.type === 'reasoning').map(e => e.content || '')
+          if (parts.length > 0) reasoningSnapshot = parts.join('\n\n---\n\n')
+        }
+        return { ...m, isStreaming: false, toolCallsLog, reasoningSnapshot: reasoningSnapshot || null }
+      }))
     } else if (eventType === 'error') {
       onUpdate({ error: true })
       setMessages(prev => prev.map(m =>

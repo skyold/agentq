@@ -10,12 +10,23 @@ For new AI assistants, use this module as the foundation and only implement:
 - Domain-specific tools
 - Domain-specific result fields (e.g., prompt_result, signal_configs, code_suggestion)
 
-Architecture:
-- Frontend sends request -> Backend creates task_id, starts background task, returns task_id
-- Background task: calls AI API -> writes to StreamBuffer -> saves to database on completion
-- Frontend polls /api/ai-stream/{task_id}?offset=N to get chunks
-- If frontend disconnects, background task continues and saves result to database
-- Frontend reconnects and either continues polling or reads completed result from database
+Architecture (IMPORTANT - read before modifying any AI streaming code):
+
+    The frontend and backend are FULLY DECOUPLED via an in-memory buffer.
+    This is NOT a direct SSE long-connection. The flow is:
+
+    1. Frontend POST /api/hyper-ai/chat -> Backend returns task_id immediately
+    2. Backend spawns a background thread running the AI generator (e.g. stream_chat_response)
+    3. Generator yields SSE-formatted strings -> run_ai_task_in_background() parses them
+       and writes each event into StreamBufferManager (in-memory, keyed by task_id)
+    4. Frontend polls GET /api/ai-stream/{task_id}?offset=N every 300ms to pull new events
+    5. If frontend disconnects (page close/refresh), the background thread keeps running
+       and events keep accumulating in the buffer (15-min expiry)
+    6. Frontend reconnects -> resumes polling from last offset -> gets all missed events
+
+    Key implication: ANY event yielded by the generator automatically becomes available
+    to the frontend via polling. To add new event types (e.g. subagent progress), just
+    yield them from the generator - no changes needed in this module.
 """
 import asyncio
 import json
@@ -221,14 +232,13 @@ def run_ai_task_in_background(
     """
     Run an AI streaming task in a background thread.
 
-    The generator_func should yield SSE-formatted strings (event: xxx\ndata: {...}\n\n).
-    Each yielded event is parsed and added to the StreamBuffer.
+    The generator_func yields SSE-formatted strings. Each event is parsed and stored
+    in StreamBufferManager, where the frontend retrieves it via polling. The generator
+    runs independently of the frontend connection - if the frontend disconnects, this
+    thread keeps running and events accumulate in the buffer (15-min expiry).
 
-    Args:
-        task_id: The task ID to use
-        generator_func: A callable that returns a generator yielding SSE events
-        on_complete: Optional callback when task completes successfully
-        on_error: Optional callback when task fails
+    Any new SSE event type yielded by the generator will automatically be available
+    to the frontend without changes here.
     """
     def run():
         manager = get_buffer_manager()

@@ -358,9 +358,20 @@ export default function AiAttributionChatModal({
         content: data.content as string,
         diagnosisResults: data.diagnosis_results as DiagnosisResult[],
       })
+      if (data.compression_points) setCompressionPoints(data.compression_points as CompressionPoint[])
       // Convert streaming analysisLog to stored format for immediate display
+      // Prefer backend done event data over local conversion
       setMessages(prev => prev.map(m => {
         if (m.id !== msgId) return m
+        const backendTcLog = data.tool_calls_log as AnalysisEntry[] | null
+        const backendRSnap = data.reasoning_snapshot as string | null
+        if (backendTcLog || backendRSnap) {
+          const analysisLog = backendTcLog
+            ? backendTcLog.map((e: any) => ({ type: 'tool_call' as const, name: e.tool || e.name, arguments: e.args || e.arguments, result: e.result }))
+            : (m.analysisLog || []).filter(e => e.type === 'tool_call')
+          return { ...m, isStreaming: false, statusText: undefined, analysisLog: analysisLog.length > 0 ? analysisLog : undefined, reasoning_snapshot: backendRSnap || undefined }
+        }
+        // Fallback: convert from streaming analysisLog
         const log = m.analysisLog || []
         const toolCalls = log.filter(e => e.type === 'tool_call')
         const reasoningParts = log.filter(e => e.type === 'reasoning').map(e => e.content || '')
