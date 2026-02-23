@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -440,18 +441,13 @@ export default function StrategyPanel({
                 <section className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="text-xs text-muted-foreground uppercase tracking-wide">{t('strategy.triggerInterval', 'Trigger Interval (seconds)')}</div>
-                    <label className="inline-flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={scheduledTriggerEnabled}
-                        onChange={(event) => {
-                          setScheduledTriggerEnabled(event.target.checked)
-                          resetMessages()
-                        }}
-                        className="h-4 w-4"
-                      />
-                      {scheduledTriggerEnabled ? t('common.enabled', 'Enabled') : t('common.disabled', 'Disabled')}
-                    </label>
+                    <Switch
+                      checked={scheduledTriggerEnabled}
+                      onCheckedChange={(checked) => {
+                        setScheduledTriggerEnabled(checked)
+                        resetMessages()
+                      }}
+                    />
                   </div>
                   <Input
                     type="number"
@@ -487,18 +483,13 @@ export default function StrategyPanel({
                       <div className="text-xs text-muted-foreground uppercase tracking-wide">{t('strategy.strategyStatus', 'Strategy Status')}</div>
                       <p className="text-xs text-muted-foreground">{enabled ? t('strategy.enabledDesc', 'Enabled: strategy reacts to signals and scheduled triggers.') : t('strategy.disabledDesc', 'Disabled: strategy will not auto-trade.')}</p>
                     </div>
-                    <label className="inline-flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={enabled}
-                        onChange={(event) => {
-                          setEnabled(event.target.checked)
-                          resetMessages()
-                        }}
-                        className="h-4 w-4"
-                      />
-                      {enabled ? t('common.enabled', 'Enabled') : t('common.disabled', 'Disabled')}
-                    </label>
+                    <Switch
+                      checked={enabled}
+                      onCheckedChange={(checked) => {
+                        setEnabled(checked)
+                        resetMessages()
+                      }}
+                    />
                   </div>
                 </section>
 

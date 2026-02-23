@@ -9,7 +9,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Trash2, Plus, Pencil, Download, Upload } from 'lucide-react'
+import { Trash2, Plus, Pencil, Download, Upload, Loader2 } from 'lucide-react'
 import {
   getAccounts as getAccounts,
   createAccount as createAccount,
@@ -28,6 +28,7 @@ import ExchangeWalletsPanel from '@/components/trader/ExchangeWalletsPanel'
 import { AuthorizationModal } from '@/components/hyperliquid'
 import TraderDataImportDialog from '@/components/trader/TraderDataImportDialog'
 import { useTranslation } from 'react-i18next'
+import { Switch } from '@/components/ui/switch'
 
 interface SettingsDialogProps {
   open: boolean
@@ -428,15 +429,13 @@ export default function SettingsDialog({ open, onOpenChange, onAccountUpdated, e
                         value={newAccount.api_key || ''}
                         onChange={(e) => setNewAccount({ ...newAccount, api_key: e.target.value })}
                       />
-                      <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4"
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Switch
                           checked={newAccount.auto_trading_enabled ?? true}
-                          onChange={(e) => setNewAccount({ ...newAccount, auto_trading_enabled: e.target.checked })}
+                          onCheckedChange={(checked) => setNewAccount({ ...newAccount, auto_trading_enabled: checked })}
                         />
                         <span>Start Trading</span>
-                      </label>
+                      </div>
                       <div className="flex gap-2">
                         <Button onClick={handleCreateAccount} disabled={loading}>
                           Test and Create
@@ -481,15 +480,13 @@ export default function SettingsDialog({ open, onOpenChange, onAccountUpdated, e
                           value={editAccount.api_key || ''}
                           onChange={(e) => setEditAccount({ ...editAccount, api_key: e.target.value })}
                         />
-                        <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4"
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Switch
                             checked={editAccount.auto_trading_enabled ?? true}
-                            onChange={(e) => setEditAccount({ ...editAccount, auto_trading_enabled: e.target.checked })}
+                            onCheckedChange={(checked) => setEditAccount({ ...editAccount, auto_trading_enabled: checked })}
                           />
                           <span>Start Trading</span>
-                        </label>
+                        </div>
                         {testResult && (
                           <div className={`text-xs p-2 rounded ${
                             testResult.includes('❌')
@@ -512,19 +509,7 @@ export default function SettingsDialog({ open, onOpenChange, onAccountUpdated, e
                       <>
                         <div className="flex items-center justify-between gap-4">
                           <div className="space-y-1 flex-1">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="font-medium">{account.name}</div>
-                              <label className="flex items-center gap-2 text-xs text-muted-foreground whitespace-nowrap">
-                                <input
-                                  type="checkbox"
-                                  className="h-4 w-4"
-                                  checked={account.auto_trading_enabled ?? true}
-                                  disabled={toggleLoadingId === account.id || loading}
-                                  onChange={(e) => handleToggleAutoTrading(account, e.target.checked)}
-                                />
-                                <span>Start Trading</span>
-                              </label>
-                            </div>
+                            <div className="font-medium">{account.name}</div>
                             <div className="text-xs text-muted-foreground">
                               {account.model ? `Model: ${account.model}` : 'No model configured'}
                             </div>
@@ -539,30 +524,43 @@ export default function SettingsDialog({ open, onOpenChange, onAccountUpdated, e
                               </div>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              onClick={() => handleExport(account)}
-                              variant="outline"
-                              size="sm"
-                              title={t('traderData.export')}
-                            >
-                              <Download className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              onClick={() => handleImportClick(account)}
-                              variant="outline"
-                              size="sm"
-                              title={t('traderData.import')}
-                            >
-                              <Upload className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              onClick={() => startEdit(account)}
-                              variant="outline"
-                              size="sm"
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground whitespace-nowrap">
+                              {toggleLoadingId === account.id && (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              )}
+                              <span>Start Trading</span>
+                              <Switch
+                                checked={account.auto_trading_enabled ?? true}
+                                disabled={toggleLoadingId === account.id || loading}
+                                onCheckedChange={(checked) => handleToggleAutoTrading(account, checked)}
+                              />
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                onClick={() => handleExport(account)}
+                                variant="outline"
+                                size="sm"
+                                title={t('traderData.export')}
+                              >
+                                <Download className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                onClick={() => handleImportClick(account)}
+                                variant="outline"
+                                size="sm"
+                                title={t('traderData.import')}
+                              >
+                                <Upload className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                onClick={() => startEdit(account)}
+                                variant="outline"
+                                size="sm"
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            </div>
                           </div>
                         </div>
 
