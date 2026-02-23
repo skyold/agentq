@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from database.connection import SessionLocal
@@ -785,6 +785,7 @@ def list_ai_conversations(
 @router.get("/ai-conversations/{conversation_id}/messages")
 def get_conversation_messages_api(
     conversation_id: int,
+    account_id: Optional[int] = Query(None),
     db: Session = Depends(get_db)
 ) -> Dict:
     """
@@ -808,7 +809,7 @@ def get_conversation_messages_api(
 
     # Get compression points
     from database.models import AiPromptConversation, HyperAiProfile
-    from services.ai_context_compression_service import calculate_token_usage
+    from services.ai_context_compression_service import calculate_token_usage, restore_tool_calls_to_messages
     import json as json_module
 
     conversation = db.query(AiPromptConversation).filter(
@@ -823,12 +824,46 @@ def get_conversation_messages_api(
         except (json_module.JSONDecodeError, TypeError):
             compression_points = []
 
-    # Calculate token usage for warning display
+    # Determine model for token calculation: prefer account model, fallback to global
+    token_model = None
+    api_format = "openai"
+    if account_id:
+        acct = db.query(Account).filter(Account.id == account_id).first()
+        if acct and acct.model:
+            token_model = acct.model
+            from services.ai_decision_service import detect_api_format
+            _, fmt = detect_api_format(acct.base_url or "")
+            api_format = fmt or "openai"
+    if not token_model:
+        profile = db.query(HyperAiProfile).first()
+        if profile and profile.llm_model:
+            token_model = profile.llm_model
+            from services.hyper_ai_service import get_llm_config
+            llm_config = get_llm_config(db)
+            api_format = llm_config.get("api_format", "openai")
+
+    # Calculate token usage (only messages after compression point + summary)
     token_usage = None
-    profile = db.query(HyperAiProfile).first()
-    if profile and profile.llm_model and messages:
-        msg_list = [{"role": m["role"], "content": m["content"]} for m in messages]
-        token_usage = calculate_token_usage(msg_list, profile.llm_model)
+    if token_model and messages:
+        from services.ai_context_compression_service import get_last_compression_point
+        from database.models import AiPromptMessage
+
+        cp = get_last_compression_point(conversation) if conversation else None
+        cp_msg_id = cp.get("message_id", 0) if cp else 0
+
+        history_orm = db.query(AiPromptMessage).filter(
+            AiPromptMessage.conversation_id == conversation_id,
+            AiPromptMessage.id > cp_msg_id
+        ).order_by(AiPromptMessage.created_at).all()
+
+        msg_dicts = [
+            {"role": m.role, "content": m.content, "tool_calls_log": m.tool_calls_log}
+            for m in history_orm
+        ]
+        msg_list = restore_tool_calls_to_messages(msg_dicts, api_format)
+        if cp and cp.get("summary"):
+            msg_list.insert(0, {"role": "system", "content": cp["summary"]})
+        token_usage = calculate_token_usage(msg_list, token_model)
 
     return {
         "messages": messages,

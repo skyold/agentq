@@ -183,19 +183,30 @@ HYPER_AI_TOOLS = [
         "type": "function",
         "function": {
             "name": "save_signal_pool",
-            "description": "Create or update a signal pool configuration.",
+            "description": "Create a signal pool from complete signal configuration. Automatically creates signal definitions and combines them into a pool.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "pool_id": {"type": "integer", "description": "Pool ID to update (omit for create)"},
                     "pool_name": {"type": "string", "description": "Display name for the pool"},
-                    "symbols": {"type": "array", "items": {"type": "string"}, "description": "Symbols to monitor"},
-                    "signal_ids": {"type": "array", "items": {"type": "integer"}, "description": "Signal definition IDs"},
-                    "logic": {"type": "string", "enum": ["AND", "OR"], "description": "Logic operator (default: OR)"},
+                    "symbol": {"type": "string", "description": "Symbol to monitor (e.g., BTC, ETH)"},
+                    "signals": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "metric": {"type": "string", "description": "Metric name (e.g., cvd, oi_delta_percent, order_imbalance)"},
+                                "operator": {"type": "string", "description": "Comparison operator (greater_than, less_than, etc.)"},
+                                "threshold": {"type": "number", "description": "Threshold value"},
+                                "time_window": {"type": "string", "description": "Time window (e.g., 5m, 15m, 1h)"}
+                            }
+                        },
+                        "description": "Array of signal conditions"
+                    },
+                    "logic": {"type": "string", "enum": ["AND", "OR"], "description": "Logic operator (default: AND)"},
                     "exchange": {"type": "string", "enum": ["hyperliquid", "binance"], "description": "Exchange (default: hyperliquid)"},
-                    "enabled": {"type": "boolean", "description": "Enable/disable pool (default: true)"}
+                    "description": {"type": "string", "description": "Optional description for the pool"}
                 },
-                "required": ["pool_name", "symbols", "signal_ids"]
+                "required": ["pool_name", "symbol", "signals"]
             }
         }
     },
@@ -784,65 +795,39 @@ def execute_diagnose_trader_issues(db: Session, trader_id: int) -> str:
 def execute_save_signal_pool(
     db: Session,
     pool_name: str,
-    symbols: List[str],
-    signal_ids: List[int],
-    pool_id: int = None,
-    logic: str = "OR",
+    symbol: str,
+    signals: List[Dict[str, Any]],
+    logic: str = "AND",
     exchange: str = "hyperliquid",
-    enabled: bool = True
+    description: str = None
 ) -> str:
-    """Create or update a signal pool."""
-    from database.models import SignalPool, SignalDefinition
+    """Create a signal pool by calling the existing API handler."""
+    from api.signal_routes import create_pool_from_config, SignalPoolConfigRequest
 
     try:
-        # Validate signal_ids exist
-        existing_signals = db.query(SignalDefinition.id).filter(
-            SignalDefinition.id.in_(signal_ids)
-        ).all()
-        existing_ids = {s[0] for s in existing_signals}
-        invalid_ids = set(signal_ids) - existing_ids
-        if invalid_ids:
-            return json.dumps({"error": f"Invalid signal IDs: {list(invalid_ids)}"})
+        # Build request object for the existing API handler
+        request = SignalPoolConfigRequest(
+            name=pool_name,
+            symbol=symbol,
+            signals=signals,
+            logic=logic,
+            exchange=exchange,
+            description=description
+        )
 
-        symbols_json = json.dumps([s.upper() for s in symbols])
-        signal_ids_json = json.dumps(signal_ids)
-
-        if pool_id:
-            # Update existing pool
-            pool = db.query(SignalPool).filter(SignalPool.id == pool_id).first()
-            if not pool:
-                return json.dumps({"error": f"Signal pool {pool_id} not found"})
-
-            pool.pool_name = pool_name
-            pool.symbols = symbols_json
-            pool.signal_ids = signal_ids_json
-            pool.logic = logic
-            pool.exchange = exchange
-            pool.enabled = enabled
-            db.commit()
-            action = "updated"
-        else:
-            # Create new pool
-            pool = SignalPool(
-                pool_name=pool_name,
-                symbols=symbols_json,
-                signal_ids=signal_ids_json,
-                logic=logic,
-                exchange=exchange,
-                enabled=enabled
-            )
-            db.add(pool)
-            db.commit()
-            db.refresh(pool)
-            action = "created"
+        # Call the existing API handler directly
+        result = create_pool_from_config(request, db)
 
         return json.dumps({
             "success": True,
-            "pool_id": pool.id,
-            "pool_name": pool_name,
-            "action": action,
-            "note": "Signal pool saved. Bind it to an AI Trader to start receiving triggers."
-        }, indent=2)
+            "pool_id": result["pool"]["id"],
+            "pool_name": result["pool"]["pool_name"],
+            "symbol": symbol.upper(),
+            "signals_created": len(result["signals"]),
+            "logic": logic,
+            "exchange": exchange,
+            "note": "Signal pool created. Bind it to an AI Trader to start receiving triggers."
+        })
 
     except Exception as e:
         db.rollback()
@@ -931,54 +916,37 @@ def execute_save_program(
     program_id: int = None,
     description: str = None
 ) -> str:
-    """Create or update a trading program."""
-    from database.models import TradingProgram
+    """Create or update a trading program by calling existing API handlers."""
+    from routes.program_routes import (
+        create_program, update_program, ProgramCreate, ProgramUpdate
+    )
+    from fastapi import HTTPException
 
     try:
-        # Validate code syntax
-        from services.ai_program_service import _validate_python_code
-        validation = _validate_python_code(code)
-        if "Error" in validation or "error" in validation.lower():
-            return json.dumps({
-                "success": False,
-                "error": "Code validation failed",
-                "details": validation
-            })
-
         if program_id:
             # Update existing program
-            program = db.query(TradingProgram).filter(TradingProgram.id == program_id).first()
-            if not program:
-                return json.dumps({"error": f"Program {program_id} not found"})
-
-            program.name = name
-            program.code = code
-            if description:
-                program.description = description
-            db.commit()
+            data = ProgramUpdate(name=name, code=code, description=description)
+            result = update_program(program_id, data, db)
             action = "updated"
         else:
             # Create new program
-            program = TradingProgram(
-                user_id=1,  # Default user
-                name=name,
-                description=description or "",
-                code=code
-            )
-            db.add(program)
-            db.commit()
-            db.refresh(program)
+            data = ProgramCreate(name=name, code=code, description=description)
+            result = create_program(data, db)
             action = "created"
 
         return json.dumps({
             "success": True,
-            "program_id": program.id,
-            "name": name,
+            "program_id": result.id,
+            "name": result.name,
             "action": action,
             "validation": {"syntax_valid": True, "security_check": "passed"},
             "note": "Program saved. Use test_run_code to verify logic before binding."
         }, indent=2)
 
+    except HTTPException as e:
+        db.rollback()
+        logger.error(f"[save_program] HTTPException: {e.detail}")
+        return json.dumps({"success": False, "error": e.detail})
     except Exception as e:
         db.rollback()
         logger.error(f"[save_program] Error: {e}")
@@ -1124,12 +1092,11 @@ def execute_hyper_ai_tool(db: Session, tool_name: str, arguments: Dict[str, Any]
             return execute_save_signal_pool(
                 db,
                 pool_name=arguments.get("pool_name"),
-                symbols=arguments.get("symbols", []),
-                signal_ids=arguments.get("signal_ids", []),
-                pool_id=arguments.get("pool_id"),
-                logic=arguments.get("logic", "OR"),
+                symbol=arguments.get("symbol", "BTC"),
+                signals=arguments.get("signals", []),
+                logic=arguments.get("logic", "AND"),
                 exchange=arguments.get("exchange", "hyperliquid"),
-                enabled=arguments.get("enabled", True)
+                description=arguments.get("description")
             )
 
         elif tool_name == "save_prompt":

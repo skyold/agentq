@@ -38,6 +38,7 @@ from services.ai_decision_service import (
     build_llm_payload,
     build_llm_headers,
     is_reasoning_model,
+    extract_reasoning,
 )
 from services.ai_stream_service import (
     get_buffer_manager,
@@ -321,6 +322,7 @@ def get_conversation_messages(
 
     return [
         {
+            "id": msg.id,
             "role": msg.role,
             "content": msg.content,
             "reasoning_snapshot": msg.reasoning_snapshot,
@@ -378,9 +380,14 @@ def build_messages_for_api(
 ) -> tuple[List[Dict[str, str]], Optional[List[Dict]]]:
     """
     Build message list for LLM API call with automatic compression.
+    Uses compression_points to skip already-compressed messages.
     Returns (messages, tools) tuple.
     """
-    from services.ai_context_compression_service import compress_messages, update_compression_points
+    from services.ai_context_compression_service import (
+        compress_messages, update_compression_points,
+        restore_tool_calls_to_messages,
+        get_last_compression_point, filter_messages_by_compression,
+    )
 
     messages = []
 
@@ -398,13 +405,36 @@ def build_messages_for_api(
                 "content": f"User Profile:\n{profile_context}"
             })
 
-    # Conversation history (get more messages, compression will handle limits)
-    history = get_conversation_messages(db, conversation_id, limit=100)
-    last_message_id = None
-    for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-        if msg.get("id"):
-            last_message_id = msg["id"]
+    # Check compression points - load summary instead of old messages
+    conversation = db.query(HyperAiConversation).filter(
+        HyperAiConversation.id == conversation_id
+    ).first()
+    cp = get_last_compression_point(conversation) if conversation else None
+
+    if cp and cp.get("summary"):
+        messages.append({
+            "role": "system",
+            "content": f"[Previous conversation summary]\n{cp['summary']}"
+        })
+
+    # Load history messages (ORM objects for id-based filtering)
+    history_orm = db.query(HyperAiMessage).filter(
+        HyperAiMessage.conversation_id == conversation_id
+    ).order_by(HyperAiMessage.created_at).limit(100).all()
+
+    # Filter by compression point
+    history_orm = filter_messages_by_compression(history_orm, cp)
+
+    last_message_id = history_orm[-1].id if history_orm else None
+
+    # Convert to dicts and restore tool calls
+    api_format = api_config.get("api_format", "openai")
+    history_dicts = [
+        {"role": m.role, "content": m.content, "tool_calls_log": m.tool_calls_log}
+        for m in history_orm
+    ]
+    restored_history = restore_tool_calls_to_messages(history_dicts, api_format)
+    messages.extend(restored_history)
 
     # Current user message
     messages.append({"role": "user", "content": user_message})
@@ -415,9 +445,6 @@ def build_messages_for_api(
 
     # Update compression_points if compression occurred
     if result["compressed"] and result["summary"] and last_message_id:
-        conversation = db.query(HyperAiConversation).filter(
-            HyperAiConversation.id == conversation_id
-        ).first()
         if conversation:
             update_compression_points(
                 conversation, last_message_id,
@@ -638,7 +665,7 @@ def stream_chat_response(
                 # OpenAI format
                 message = resp_json["choices"][0]["message"]
                 api_tool_calls = message.get("tool_calls", [])
-                reasoning_content = message.get("reasoning_content", "")
+                reasoning_content = message.get("reasoning_content", "") or extract_reasoning(message)
                 content = message.get("content", "")
 
             # Send reasoning content if present
@@ -753,11 +780,39 @@ def stream_chat_response(
             conv.message_count = (conv.message_count or 0) + 1
         db.commit()
 
-        yield format_sse_event("done", {
+        # Calculate fresh token usage and compression points for frontend
+        done_data = {
             "conversation_id": conversation_id,
             "content": final_content,
             "tool_calls_count": len(tool_calls_log)
-        })
+        }
+        try:
+            from services.ai_context_compression_service import (
+                calculate_token_usage, restore_tool_calls_to_messages,
+                get_last_compression_point
+            )
+            import json as json_mod
+            profile = db.query(HyperAiProfile).first()
+            if profile and profile.llm_model and conv:
+                llm_cfg = get_llm_config(db)
+                af = llm_cfg.get("api_format", "openai")
+                cp = get_last_compression_point(conv)
+                cp_mid = cp.get("message_id", 0) if cp else 0
+                h_orm = db.query(HyperAiMessage).filter(
+                    HyperAiMessage.conversation_id == conversation_id,
+                    HyperAiMessage.id > cp_mid
+                ).order_by(HyperAiMessage.created_at).all()
+                md = [{"role": m.role, "content": m.content, "tool_calls_log": m.tool_calls_log} for m in h_orm]
+                ml = restore_tool_calls_to_messages(md, af)
+                if cp and cp.get("summary"):
+                    ml.insert(0, {"role": "system", "content": cp["summary"]})
+                done_data["token_usage"] = calculate_token_usage(ml, profile.llm_model)
+            if conv and conv.compression_points:
+                done_data["compression_points"] = json_mod.loads(conv.compression_points)
+        except Exception as te:
+            logger.warning(f"[HyperAI] Token calc in done event failed: {te}")
+
+        yield format_sse_event("done", done_data)
 
     except Exception as e:
         logger.error(f"[HyperAI] Error: {e}", exc_info=True)

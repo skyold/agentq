@@ -559,6 +559,8 @@ export default function HyperAiPage() {
           } else if (eventType === 'done') {
             if (data.content) content = data.content
             if (data.conversation_id) setCurrentConvId(data.conversation_id)
+            if (data.token_usage) setTokenUsage(data.token_usage)
+            if (data.compression_points) setCompressionPoints(data.compression_points)
           }
         }
 
@@ -722,8 +724,8 @@ export default function HyperAiPage() {
               {t('common.keyboardHintCtrlEnter', 'Press Ctrl+Enter (Cmd+Enter on Mac) to send')}
             </p>
             {tokenUsage?.show_warning && (
-              <p className="text-xs text-muted-foreground">
-                {t('hyperAi.contextWarning', 'Context: {{percent}}% · Compressing soon', { percent: Math.round(tokenUsage.usage_ratio * 100) })}
+              <p className="text-xs text-amber-500">
+                {t('hyperAi.contextWarning', 'Context remaining: {{percent}}% · Compressing soon', { percent: Math.max(0, Math.round((1 - tokenUsage.usage_ratio) * 100)) })}
               </p>
             )}
           </div>

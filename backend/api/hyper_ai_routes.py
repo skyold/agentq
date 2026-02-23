@@ -255,7 +255,7 @@ def get_messages(
 ):
     """Get messages from a conversation with compression points and token usage."""
     from database.models import HyperAiConversation, HyperAiProfile
-    from services.ai_context_compression_service import calculate_token_usage
+    from services.ai_context_compression_service import calculate_token_usage, restore_tool_calls_to_messages
     import json as json_module
 
     messages = get_conversation_messages(db, conversation_id, limit)
@@ -272,11 +272,31 @@ def get_messages(
         except (json_module.JSONDecodeError, TypeError):
             compression_points = []
 
-    # Calculate token usage for warning display
+    # Calculate token usage (only messages after compression point + summary)
     token_usage = None
     profile = db.query(HyperAiProfile).first()
     if profile and profile.llm_model and messages:
-        msg_list = [{"role": m["role"], "content": m["content"]} for m in messages]
+        from services.ai_context_compression_service import get_last_compression_point
+        from database.models import HyperAiMessage
+        llm_config = get_llm_config(db)
+        api_format = llm_config.get("api_format", "openai")
+
+        # Load ORM objects for id-based filtering
+        cp = get_last_compression_point(conversation) if conversation else None
+        cp_msg_id = cp.get("message_id", 0) if cp else 0
+
+        history_orm = db.query(HyperAiMessage).filter(
+            HyperAiMessage.conversation_id == conversation_id,
+            HyperAiMessage.id > cp_msg_id
+        ).order_by(HyperAiMessage.created_at).all()
+
+        msg_dicts = [
+            {"role": m.role, "content": m.content, "tool_calls_log": m.tool_calls_log}
+            for m in history_orm
+        ]
+        msg_list = restore_tool_calls_to_messages(msg_dicts, api_format)
+        if cp and cp.get("summary"):
+            msg_list.insert(0, {"role": "system", "content": cp["summary"]})
         token_usage = calculate_token_usage(msg_list, profile.llm_model)
 
     return {

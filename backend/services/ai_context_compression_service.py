@@ -2,22 +2,27 @@
 AI Context Compression Service - Shared context management for all AI assistants
 
 This module provides:
-1. Token estimation for messages using tiktoken
+1. Token estimation for messages using tiktoken (including tool_calls)
 2. Context window management with compression triggers
 3. Conversation summarization using the user's configured LLM
 4. Memory extraction during compression
+5. Tool call history restoration from DB format to LLM API format
 
 Architecture:
-- Trigger compression at 70% of context window (conservative for tokenizer differences)
-- Generate summary of older messages
-- Extract important insights to Memory table
-- Replace old messages with summary in conversation context
+- restore_tool_calls_to_messages(): Converts DB [{tool, args, result}] back into
+  standard LLM API messages (OpenAI tool_calls+tool or Anthropic tool_use+tool_result).
+  Called by all 5 AI services when building cross-turn context.
+- compress_messages(): Trigger compression at 70% of context window. Generates summary
+  of older messages, extracts memories, replaces old messages with summary.
+- find_compression_point(): Never splits inside a tool-call group boundary.
 
 Usage:
     from services.ai_context_compression_service import (
         estimate_tokens,
         should_compress,
-        compress_conversation
+        compress_messages,
+        restore_tool_calls_to_messages,
+        calculate_token_usage,
     )
 """
 import json
@@ -113,16 +118,38 @@ def estimate_tokens(text: str) -> int:
 
 
 def estimate_messages_tokens(messages: List[Dict[str, Any]]) -> int:
-    """Estimate total tokens for a list of messages."""
+    """
+    Estimate total tokens for a list of messages.
+
+    Handles standard messages (role + content) as well as tool-call messages:
+    - OpenAI format: "tool_calls" field on assistant messages (function name + arguments JSON)
+    - Anthropic format: content list with tool_use/tool_result blocks
+    """
     total = 0
     for msg in messages:
         content = msg.get("content", "")
         if isinstance(content, str):
             total += estimate_tokens(content)
         elif isinstance(content, list):
+            # Anthropic format: content is a list of blocks
             for item in content:
-                if isinstance(item, dict) and "text" in item:
-                    total += estimate_tokens(item["text"])
+                if isinstance(item, dict):
+                    if "text" in item:
+                        total += estimate_tokens(item["text"])
+                    elif item.get("type") == "tool_use":
+                        # Count tool name + serialized input
+                        total += estimate_tokens(item.get("name", ""))
+                        total += estimate_tokens(json.dumps(item.get("input", {})))
+                    elif item.get("type") == "tool_result":
+                        tc = item.get("content", "")
+                        total += estimate_tokens(tc) if isinstance(tc, str) else 20
+        # OpenAI format: tool_calls field on assistant messages
+        tool_calls = msg.get("tool_calls", [])
+        if tool_calls:
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                total += estimate_tokens(fn.get("name", ""))
+                total += estimate_tokens(fn.get("arguments", ""))
         # Add overhead for role and formatting
         total += 4
     return total
@@ -159,8 +186,8 @@ def should_compress(
     return (current_tokens > max_tokens, current_tokens, max_tokens)
 
 
-# Warning threshold (55% - show warning before compression at 70%)
-WARNING_THRESHOLD = 0.55
+# Show warning when usage reaches 85% of compression threshold (15% remaining)
+WARNING_RATIO = 0.85
 
 
 def calculate_token_usage(
@@ -171,24 +198,29 @@ def calculate_token_usage(
     Calculate token usage ratio for a conversation.
     Used to display context usage warning in frontend.
 
+    usage_ratio is relative to max_tokens (the compression trigger line):
+    - 0.85 = 85% used, 15% remaining -> show_warning starts
+    - 1.0  = at compression line, 0% remaining
+    - >1.0 = over limit, capped to 1.0 for display
+
     Returns:
         {
             "current_tokens": int,
             "max_tokens": int,
-            "usage_ratio": float (0.0-1.0),
-            "show_warning": bool (True if 55%-70%)
+            "usage_ratio": float (0.0-1.0, capped),
+            "show_warning": bool (True when >= 85% of compression line)
         }
     """
     context_window = get_context_window(model)
     max_tokens = int(context_window * COMPRESSION_THRESHOLD) - RESERVED_TOKENS
     current_tokens = estimate_messages_tokens(messages)
-    usage_ratio = current_tokens / max_tokens if max_tokens > 0 else 0
+    raw_ratio = current_tokens / max_tokens if max_tokens > 0 else 0
 
     return {
         "current_tokens": current_tokens,
         "max_tokens": max_tokens,
-        "usage_ratio": round(usage_ratio, 3),
-        "show_warning": WARNING_THRESHOLD <= usage_ratio < COMPRESSION_THRESHOLD
+        "usage_ratio": round(min(raw_ratio, 1.0), 3),
+        "show_warning": raw_ratio >= WARNING_RATIO
     }
 
 
@@ -200,43 +232,272 @@ def find_compression_point(
     Find the index where to split messages for compression.
     Keep recent messages, compress older ones.
 
+    IMPORTANT: Never splits inside a tool-call group. A tool-call group is:
+    - OpenAI:    assistant(tool_calls) + tool(result)... + assistant(final)
+    - Anthropic: assistant(tool_use) + user(tool_result) + assistant(final)
+    The split point is adjusted outward to the nearest group boundary.
+
     Returns index of first message to keep (messages before this will be compressed).
     """
     if not messages:
         return 0
 
-    # Calculate tokens from the end
+    # Build a map of tool-call group boundaries.
+    # Each group starts at an assistant message with tool_calls and ends at the
+    # next assistant message that has NO tool_calls (the final reply).
+    group_start_of = {}  # index -> group start index
+    current_group_start = None
+    for i, msg in enumerate(messages):
+        role = msg.get("role", "")
+        has_tool_calls = bool(msg.get("tool_calls"))
+        # Anthropic: assistant content list with tool_use blocks
+        if not has_tool_calls and isinstance(msg.get("content"), list):
+            has_tool_calls = any(
+                b.get("type") == "tool_use" for b in msg["content"] if isinstance(b, dict)
+            )
+        if role == "assistant" and has_tool_calls:
+            current_group_start = i
+        if current_group_start is not None:
+            group_start_of[i] = current_group_start
+        # End group when we hit an assistant message without tool_calls
+        if role == "assistant" and not has_tool_calls and current_group_start is not None:
+            current_group_start = None
+
+    # Calculate tokens from the end to find raw split point
     tokens_from_end = 0
     keep_from_index = len(messages)
 
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
-        content = msg.get("content", "")
-        msg_tokens = estimate_tokens(content) if isinstance(content, str) else 100
-        msg_tokens += 4  # overhead
-
+        msg_tokens = _estimate_single_message_tokens(msg)
         if tokens_from_end + msg_tokens > target_tokens:
             break
         tokens_from_end += msg_tokens
         keep_from_index = i
 
+    # Adjust: if split lands inside a tool-call group, move to group start
+    if keep_from_index in group_start_of:
+        keep_from_index = group_start_of[keep_from_index]
+
     # Keep at least the last 2 messages
     return min(keep_from_index, len(messages) - 2)
 
 
-COMPRESSION_PROMPT = """You are a conversation summarizer. Your task is to create a concise summary of the conversation history.
+def _estimate_single_message_tokens(msg: Dict[str, Any]) -> int:
+    """Estimate tokens for a single message (content + tool_calls)."""
+    tokens = 0
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        tokens += estimate_tokens(content)
+    elif isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict):
+                if "text" in item:
+                    tokens += estimate_tokens(item["text"])
+                elif item.get("type") in ("tool_use", "tool_result"):
+                    tokens += estimate_tokens(json.dumps(item))
+    for tc in msg.get("tool_calls", []):
+        fn = tc.get("function", {})
+        tokens += estimate_tokens(fn.get("name", ""))
+        tokens += estimate_tokens(fn.get("arguments", ""))
+    tokens += 4  # overhead
+    return tokens
 
-Instructions:
-1. Summarize the key topics discussed
-2. Note any important decisions or conclusions
-3. Preserve critical context needed for continuing the conversation
-4. Keep the summary under 500 words
-5. Use bullet points for clarity
+
+def restore_tool_calls_to_messages(
+    history: List[Dict[str, Any]],
+    api_format: str = "openai"
+) -> List[Dict[str, Any]]:
+    """
+    Restore tool_calls_log from DB storage format into standard LLM API messages.
+
+    WHY THIS EXISTS:
+    During a single task, the LLM sees full tool_call + tool_result messages in memory.
+    But when the task completes, only `content` and `tool_calls_log` (JSON) are saved to DB.
+    On the next turn, if we only load `content`, the LLM loses all tool call context and
+    may redundantly re-call the same tools. This function restores that context.
+
+    DB storage format (tool_calls_log):
+        [{"tool": "get_positions", "args": {"symbol": "BTC"}, "result": "{...}"}]
+
+    Restored to OpenAI format:
+        assistant(content="", tool_calls=[...]) -> tool(content="...") -> ... -> assistant(content="final reply")
+
+    Restored to Anthropic format:
+        assistant(content=[tool_use blocks]) -> user(content=[tool_result blocks]) -> assistant(content="final reply")
+
+    Args:
+        history: List of DB message dicts with keys: role, content, tool_calls_log (optional)
+        api_format: "openai" or "anthropic"
+
+    Returns:
+        List of standard LLM API messages with tool calls properly structured
+    """
+    messages = []
+
+    for msg in history:
+        role = msg.get("role", "user")
+        content = msg.get("content", "") or ""
+        tool_calls_log_raw = msg.get("tool_calls_log")
+
+        # Parse tool_calls_log (could be JSON string or already a list)
+        tool_calls_log = None
+        if tool_calls_log_raw:
+            if isinstance(tool_calls_log_raw, str):
+                try:
+                    tool_calls_log = json.loads(tool_calls_log_raw)
+                except (json.JSONDecodeError, TypeError):
+                    tool_calls_log = None
+            elif isinstance(tool_calls_log_raw, list):
+                tool_calls_log = tool_calls_log_raw
+
+        # No tool calls -> simple message
+        if role != "assistant" or not tool_calls_log:
+            messages.append({"role": role, "content": content})
+            continue
+
+        # Restore tool calls based on API format
+        if api_format == "anthropic":
+            messages.extend(
+                _restore_anthropic_tool_calls(tool_calls_log, content)
+            )
+        else:
+            messages.extend(
+                _restore_openai_tool_calls(tool_calls_log, content)
+            )
+
+    return messages
+
+
+def _restore_openai_tool_calls(
+    tool_calls_log: List[Dict[str, Any]],
+    final_content: str
+) -> List[Dict[str, Any]]:
+    """
+    Restore tool calls into OpenAI chat completion format.
+
+    Produces:
+      1. assistant message with tool_calls array
+      2. One tool message per call with matching tool_call_id
+      3. Final assistant message with the actual reply content
+    """
+    result = []
+
+    # Build assistant message with tool_calls
+    tc_array = []
+    for i, entry in enumerate(tool_calls_log):
+        tc_array.append({
+            "id": f"call_restored_{i}",
+            "type": "function",
+            "function": {
+                "name": entry.get("tool", "unknown"),
+                "arguments": json.dumps(entry.get("args", {}))
+            }
+        })
+
+    result.append({
+        "role": "assistant",
+        "content": "",
+        "tool_calls": tc_array
+    })
+
+    # Add tool result messages
+    for i, entry in enumerate(tool_calls_log):
+        raw_result = entry.get("result", "")
+        result.append({
+            "role": "tool",
+            "tool_call_id": f"call_restored_{i}",
+            "content": raw_result if isinstance(raw_result, str) else json.dumps(raw_result)
+        })
+
+    # Final assistant reply
+    if final_content:
+        result.append({"role": "assistant", "content": final_content})
+
+    return result
+
+
+def _restore_anthropic_tool_calls(
+    tool_calls_log: List[Dict[str, Any]],
+    final_content: str
+) -> List[Dict[str, Any]]:
+    """
+    Restore tool calls into Anthropic messages API format.
+
+    Produces:
+      1. assistant message with tool_use content blocks
+      2. user message with tool_result content blocks
+      3. Final assistant message with the actual reply content
+    """
+    result = []
+
+    # Build tool_use blocks
+    tool_use_blocks = []
+    for i, entry in enumerate(tool_calls_log):
+        tool_use_blocks.append({
+            "type": "tool_use",
+            "id": f"tooluse_restored_{i}",
+            "name": entry.get("tool", "unknown"),
+            "input": entry.get("args", {})
+        })
+
+    result.append({"role": "assistant", "content": tool_use_blocks})
+
+    # Build tool_result blocks
+    tool_result_blocks = []
+    for i, entry in enumerate(tool_calls_log):
+        raw_result = entry.get("result", "")
+        tool_result_blocks.append({
+            "type": "tool_result",
+            "tool_use_id": f"tooluse_restored_{i}",
+            "content": raw_result if isinstance(raw_result, str) else json.dumps(raw_result)
+        })
+
+    result.append({"role": "user", "content": tool_result_blocks})
+
+    # Final assistant reply
+    if final_content:
+        result.append({"role": "assistant", "content": final_content})
+
+    return result
+
+
+COMPRESSION_PROMPT = """You are a conversation context compressor for a crypto trading AI assistant.
+Create a structured summary that preserves all critical context needed to continue the conversation seamlessly.
+
+## What to preserve (in order of priority):
+
+1. **Current task state**: What is the user working on? What stage? (e.g. "Building intraday BTC strategy, v2 generated with EMA crossover + RSI filter, not yet saved")
+
+2. **Key decisions and parameters**: Specific numbers, thresholds, configurations confirmed (e.g. "5x leverage, 2% TP, 1% SL, EMA 9/21")
+
+3. **Tool call results**: Key findings from tools - positions, balances, market data, diagnostics. Summarize findings, not raw data.
+
+4. **Code/strategy change log**: Do NOT include full code. Instead record:
+   - What was changed and why (e.g. "Relaxed depth_ratio filter from 0.001 to 0.01 because original was too strict")
+   - Version progression (e.g. "v1→v2: added volume confirmation; v2→v3: removed OI filter")
+   - Whether the latest version was saved by user or still unsaved
+
+5. **Test results and issues found**: Backtest/live test outcomes, bugs discovered, performance problems, unexpected behavior (e.g. "24h backtest: 0 trades executed due to strict depth filter")
+
+6. **Disagreements and open questions**: Points where user disagreed with AI suggestion, alternative approaches discussed but not chosen, unresolved debates
+
+7. **Pending items**: Unresolved requests, next steps discussed, things user asked to do later
+
+8. **User preferences**: Trading style, risk tolerance, workflow preferences mentioned
+
+## Rules:
+- Be specific: include actual numbers, coin names, parameter values
+- Be thorough: target 4000-6500 words (this is intentional — modern LLMs have large context windows, preserve detail over brevity)
+- Use structured format with clear section headers
+- Write as context briefing for the AI's next turn, not as a chat log
+- Do NOT include greetings or meta-discussion about the conversation itself
+- For code changes: describe the logic change, NOT the code itself
 
 Conversation to summarize:
 {conversation}
 
-Provide a clear, structured summary:"""
+Structured summary:"""
 
 
 def generate_summary(
@@ -256,13 +517,28 @@ def generate_summary(
     if not messages_to_compress:
         return None
 
-    # Build conversation text
+    # Build conversation text (handles both plain messages and tool-call messages)
     conv_parts = []
     for msg in messages_to_compress:
         role = msg.get("role", "unknown")
         content = msg.get("content", "")
         if isinstance(content, str) and content.strip():
             conv_parts.append(f"{role.upper()}: {content}")
+        elif isinstance(content, list):
+            # Anthropic format or tool_use/tool_result blocks
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "tool_use":
+                        conv_parts.append(f"ASSISTANT: [Called tool: {block.get('name', '?')}]")
+                    elif block.get("type") == "tool_result":
+                        tc = block.get("content", "")
+                        snippet = tc[:200] if isinstance(tc, str) else str(tc)[:200]
+                        conv_parts.append(f"TOOL_RESULT: {snippet}")
+        # OpenAI tool_calls on assistant messages
+        tool_calls = msg.get("tool_calls", [])
+        if tool_calls:
+            names = [tc.get("function", {}).get("name", "?") for tc in tool_calls]
+            conv_parts.append(f"ASSISTANT: [Called tools: {', '.join(names)}]")
 
     conversation_text = "\n\n".join(conv_parts)
 
@@ -276,13 +552,14 @@ def generate_summary(
         logger.warning("Incomplete API config for compression")
         return None
 
-    prompt = COMPRESSION_PROMPT.format(conversation=conversation_text[:8000])
+    prompt = COMPRESSION_PROMPT.format(conversation=conversation_text[:30000])
 
     try:
         from services.ai_decision_service import build_chat_completion_endpoints, build_llm_payload, build_llm_headers
 
         if api_format == "anthropic":
-            endpoint = f"{base_url.rstrip('/')}/messages"
+            endpoints = build_chat_completion_endpoints(base_url, model)
+            endpoint = endpoints[0] if endpoints else f"{base_url.rstrip('/')}/messages"
         else:
             endpoints = build_chat_completion_endpoints(base_url, model)
             endpoint = endpoints[0] if endpoints else f"{base_url}/chat/completions"
@@ -293,10 +570,10 @@ def generate_summary(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             api_format=api_format,
-            max_tokens=1000,
+            max_tokens=12000,
         )
 
-        response = requests.post(endpoint, headers=headers, json=body, timeout=60)
+        response = requests.post(endpoint, headers=headers, json=body, timeout=600)
 
         if response.status_code != 200:
             logger.error(f"Compression API error: {response.status_code}")
@@ -343,9 +620,6 @@ def compress_messages(
     model = api_config.get("model", "")
     needs_compression, current, max_tokens = should_compress(messages, model)
 
-    # DEBUG: Log compression check
-    print(f"[DEBUG] compress_messages: needs_compression={needs_compression}, current={current}, max={max_tokens}, threshold={int(max_tokens * COMPRESSION_THRESHOLD)}", flush=True)
-
     if not needs_compression:
         return CompressionResult(
             messages=messages,
@@ -355,7 +629,6 @@ def compress_messages(
             compressed_at=None
         )
 
-    print(f"[DEBUG] COMPRESSION TRIGGERED! {current} tokens > {int(max_tokens * COMPRESSION_THRESHOLD)} threshold", flush=True)
     logger.info(f"Compressing conversation: {current} tokens > {max_tokens} limit")
 
     # Separate system messages and conversation
@@ -390,11 +663,17 @@ def compress_messages(
     if extract_memories and db:
         try:
             from services.hyper_ai_memory_service import process_compression_memories
-            conv_text = "\n\n".join([
-                f"{m.get('role', 'unknown').upper()}: {m.get('content', '')}"
-                for m in to_compress
-                if isinstance(m.get('content'), str)
-            ])
+            mem_parts = []
+            for m in to_compress:
+                role = m.get('role', 'unknown').upper()
+                content = m.get('content', '')
+                if isinstance(content, str) and content.strip():
+                    mem_parts.append(f"{role}: {content}")
+                # Include tool call info for memory extraction
+                for tc in m.get('tool_calls', []):
+                    fn = tc.get('function', {})
+                    mem_parts.append(f"TOOL_CALL: {fn.get('name', '?')}")
+            conv_text = "\n\n".join(mem_parts)
             process_compression_memories(db, conv_text, api_config)
         except Exception as e:
             logger.warning(f"Memory extraction failed: {e}")
@@ -437,33 +716,6 @@ def compress_messages(
     )
 
 
-def prepare_messages_with_compression(
-    system_prompt: str,
-    history_messages: List[Dict[str, Any]],
-    user_message: str,
-    api_config: Dict[str, Any],
-    db: Optional[Session] = None
-) -> CompressionResult:
-    """
-    Convenience function to prepare messages with automatic compression.
-
-    Args:
-        system_prompt: System prompt text
-        history_messages: Previous conversation messages
-        user_message: Current user message
-        api_config: LLM configuration
-        db: Database session for memory extraction
-
-    Returns:
-        CompressionResult with ready-to-send messages, compressed if needed
-    """
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history_messages)
-    messages.append({"role": "user", "content": user_message})
-
-    return compress_messages(messages, api_config, db=db)
-
-
 def update_compression_points(
     conversation: Any,
     last_message_id: int,
@@ -501,3 +753,43 @@ def update_compression_points(
     conversation.compression_points = json.dumps(existing)
     db.commit()
     logger.info(f"Updated compression_points for conversation {conversation.id}")
+
+
+def get_last_compression_point(conversation: Any) -> Optional[Dict[str, Any]]:
+    """
+    Get the most recent compression point from a conversation.
+
+    Returns:
+        {"message_id": int, "summary": str, "compressed_at": str} or None
+    """
+    if not conversation.compression_points:
+        return None
+    try:
+        points = json.loads(conversation.compression_points)
+        if isinstance(points, list) and points:
+            return points[-1]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
+def filter_messages_by_compression(
+    messages_orm: list,
+    compression_point: Optional[Dict[str, Any]]
+) -> list:
+    """
+    Filter ORM message objects by compression point.
+    Only keep messages with id > compression_point["message_id"].
+
+    Args:
+        messages_orm: List of ORM message objects (must have .id attribute)
+        compression_point: Result from get_last_compression_point()
+
+    Returns:
+        Filtered list of ORM message objects (after compression point)
+    """
+    if not compression_point:
+        return messages_orm
+
+    cp_message_id = compression_point.get("message_id", 0)
+    return [m for m in messages_orm if m.id > cp_message_id]

@@ -21,6 +21,7 @@ import {
 import { TradingAccount } from '@/lib/api'
 import PacmanLoader from '@/components/ui/pacman-loader'
 import { copyToClipboard } from '@/lib/utils'
+import { Wrench } from 'lucide-react'
 
 interface ToolCallEntry {
   type: 'tool_call' | 'tool_result' | 'reasoning'
@@ -132,6 +133,16 @@ export default function AiPromptChatModal({
     }
   }, [currentConversationId])
 
+  // Refresh token usage when trader changes (without reloading messages)
+  useEffect(() => {
+    if (!currentConversationId || !selectedAccountId) return
+    const params = `?account_id=${selectedAccountId}`
+    fetch(`/api/prompts/ai-conversations/${currentConversationId}/messages${params}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.token_usage !== undefined) setTokenUsage(data.token_usage) })
+      .catch(() => {})
+  }, [selectedAccountId])
+
   const loadConversations = async () => {
     setLoadingConversations(true)
     try {
@@ -152,7 +163,8 @@ export default function AiPromptChatModal({
 
   const loadMessages = async (conversationId: number) => {
     try {
-      const response = await fetch(`/api/prompts/ai-conversations/${conversationId}/messages`)
+      const params = selectedAccountId ? `?account_id=${selectedAccountId}` : ''
+      const response = await fetch(`/api/prompts/ai-conversations/${conversationId}/messages${params}`)
       if (response.ok) {
         const data = await response.json()
         // Map API fields to frontend format
@@ -608,6 +620,59 @@ export default function AiPromptChatModal({
                           ))}
                         </div>
                       )}
+                      {/* Tool calls log - above content, HyperAI style */}
+                      {!msg.isStreaming && msg.toolCallsLog && msg.toolCallsLog.length > 0 && (
+                        <details className="mb-3 text-xs border rounded-md">
+                          <summary className="px-3 py-2 cursor-pointer bg-muted/50 hover:bg-muted font-medium flex items-center gap-1">
+                            <Wrench className="w-3 h-3" />
+                            {t('aiPrompt.toolCallsDetail', 'Tool calls ({{count}})').replace('{{count}}', msg.toolCallsLog.length.toString())}
+                          </summary>
+                          <div className="p-3 space-y-3 max-h-96 overflow-y-auto">
+                            {msg.toolCallsLog.map((entry, idx) => {
+                              const resultStr = typeof entry.result === 'string' ? entry.result : JSON.stringify(entry.result || '')
+                              return (
+                              <div key={idx} className="border-b pb-2 last:border-b-0 last:pb-0">
+                                <div className="font-medium text-blue-600 dark:text-blue-400 mb-1">
+                                  Round {idx + 1}: {entry.tool}
+                                </div>
+                                {entry.args && Object.keys(entry.args).length > 0 && (
+                                  <div className="mb-1">
+                                    {Object.entries(entry.args).map(([key, value]) => (
+                                      <div key={key} className="ml-2">
+                                        {key === 'prompt_text' ? (
+                                          <div>
+                                            <span className="text-muted-foreground">prompt_text:</span>
+                                            <pre className="mt-1 p-2 bg-muted rounded text-xs overflow-x-auto max-h-48 overflow-y-auto">
+                                              <code>{String(value)}</code>
+                                            </pre>
+                                          </div>
+                                        ) : (
+                                          <span className="text-muted-foreground">{key}: {JSON.stringify(value)}</span>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                <div className="ml-2 text-green-600 dark:text-green-400">
+                                  Result: {resultStr.length > 200 ? resultStr.slice(0, 200) + '...' : resultStr}
+                                </div>
+                              </div>
+                              )
+                            })}
+                          </div>
+                        </details>
+                      )}
+                      {/* Reasoning snapshot - above content, HyperAI style */}
+                      {!msg.isStreaming && msg.reasoningSnapshot && (
+                        <details className="mb-3 text-xs border rounded-md">
+                          <summary className="px-3 py-2 cursor-pointer bg-muted/50 hover:bg-muted font-medium">
+                            {t('aiPrompt.reasoningProcess', 'Reasoning process')}
+                          </summary>
+                          <div className="p-3 max-h-96 overflow-y-auto">
+                            <pre className="whitespace-pre-wrap text-muted-foreground">{msg.reasoningSnapshot}</pre>
+                          </div>
+                        </details>
+                      )}
                       <div className={`text-sm prose prose-sm max-w-none ${msg.role === 'user' ? 'prose-invert' : 'dark:prose-invert'}`}>
                         {msg.content ? (
                           <ReactMarkdown
@@ -637,55 +702,6 @@ export default function AiPromptChatModal({
                           <span className="text-muted-foreground italic">{t('aiPrompt.generating', 'Generating...')}</span>
                         ) : null}
                       </div>
-                      {/* Tool calls log for loaded messages */}
-                      {!msg.isStreaming && msg.toolCallsLog && msg.toolCallsLog.length > 0 && (
-                        <details className="mt-3 text-xs border rounded-md">
-                          <summary className="px-3 py-2 cursor-pointer bg-muted/50 hover:bg-muted font-medium">
-                            {t('aiPrompt.toolCallsDetail', 'Tool calls ({{count}})').replace('{{count}}', msg.toolCallsLog.length.toString())}
-                          </summary>
-                          <div className="p-3 space-y-3 max-h-96 overflow-y-auto">
-                            {msg.toolCallsLog.map((entry, idx) => (
-                              <div key={idx} className="border-b pb-2 last:border-b-0 last:pb-0">
-                                <div className="font-medium text-blue-600 dark:text-blue-400 mb-1">
-                                  Round {idx + 1}: {entry.tool}
-                                </div>
-                                {entry.args && Object.keys(entry.args).length > 0 && (
-                                  <div className="mb-1">
-                                    {Object.entries(entry.args).map(([key, value]) => (
-                                      <div key={key} className="ml-2">
-                                        {key === 'prompt_text' ? (
-                                          <div>
-                                            <span className="text-muted-foreground">prompt_text:</span>
-                                            <pre className="mt-1 p-2 bg-muted rounded text-xs overflow-x-auto max-h-48 overflow-y-auto">
-                                              <code>{String(value)}</code>
-                                            </pre>
-                                          </div>
-                                        ) : (
-                                          <span className="text-muted-foreground">{key}: {JSON.stringify(value)}</span>
-                                        )}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-                                <div className="ml-2 text-green-600 dark:text-green-400">
-                                  Result: {entry.result.length > 200 ? entry.result.slice(0, 200) + '...' : entry.result}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      )}
-                      {/* Reasoning snapshot for loaded messages */}
-                      {!msg.isStreaming && msg.reasoningSnapshot && (
-                        <details className="mt-3 text-xs border rounded-md">
-                          <summary className="px-3 py-2 cursor-pointer bg-muted/50 hover:bg-muted font-medium">
-                            {t('aiPrompt.reasoningProcess', 'Reasoning process')}
-                          </summary>
-                          <div className="p-3 max-h-96 overflow-y-auto">
-                            <pre className="whitespace-pre-wrap text-muted-foreground">{msg.reasoningSnapshot}</pre>
-                          </div>
-                        </details>
-                      )}
                       {/* Continue button for interrupted messages */}
                       {msg.isInterrupted && !loading && (
                         <div className="mt-3 pt-3 border-t border-border/50">
@@ -753,8 +769,8 @@ export default function AiPromptChatModal({
                   {t('common.keyboardHintCtrlEnter', 'Press Ctrl+Enter (Cmd+Enter on Mac) to send')}
                 </p>
                 {tokenUsage?.show_warning && (
-                  <p className="text-xs text-muted-foreground">
-                    {t('aiPrompt.contextWarning', 'Context: {{percent}}% · Compressing soon', { percent: Math.round(tokenUsage.usage_ratio * 100) })}
+                  <p className="text-xs text-amber-500">
+                    {t('aiPrompt.contextWarning', 'Context remaining: {{percent}}% · Compressing soon', { percent: Math.max(0, Math.round((1 - tokenUsage.usage_ratio) * 100)) })}
                   </p>
                 )}
               </div>

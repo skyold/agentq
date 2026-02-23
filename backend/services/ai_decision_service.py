@@ -1387,6 +1387,33 @@ def build_llm_headers(api_format: str, api_key: str) -> dict:
     return headers
 
 
+def extract_reasoning(message: dict) -> str:
+    """Extract reasoning/thinking content from LLM API response message.
+
+    Unified extraction for all providers. Currently supports:
+    - DeepSeek R1/Reasoner, Qwen QwQ, Grok-3-mini: 'reasoning_content' field
+    - Some Qwen models: 'thinking' field
+
+    Note: OpenAI o1/o3/o4 does not expose reasoning via API.
+    Note: Claude extended thinking requires enabling in request (not yet supported).
+
+    Args:
+        message: The 'message' dict from LLM response (choices[0].message)
+
+    Returns:
+        Reasoning text or empty string if none found
+    """
+    # Strategy 1: reasoning_content (DeepSeek R1, Qwen QwQ, Grok-3-mini)
+    rc = message.get("reasoning_content")
+    if rc and isinstance(rc, str) and rc.strip():
+        return rc
+    # Strategy 2: thinking field (some Qwen models via vLLM)
+    tk = message.get("thinking")
+    if tk and isinstance(tk, str) and tk.strip():
+        return tk
+    return ""
+
+
 def build_llm_payload(
     model: str,
     messages: list,

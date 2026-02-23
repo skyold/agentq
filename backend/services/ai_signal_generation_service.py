@@ -16,7 +16,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from database.models import AiSignalConversation, AiSignalMessage, Account
-from services.ai_decision_service import build_chat_completion_endpoints, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers
+from services.ai_decision_service import build_chat_completion_endpoints, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning
 from services.signal_backtest_service import signal_backtest_service, TIMEFRAME_MS
 from services.system_logger import system_logger
 
@@ -434,7 +434,7 @@ def generate_signal_with_ai(
 
             # Check for tool calls
             tool_calls = message.get("tool_calls", [])
-            reasoning_content = message.get("reasoning_content", "")
+            reasoning_content = message.get("reasoning_content", "") or extract_reasoning(message)
             content = message.get("content", "")
 
             # Log for debugging
@@ -618,6 +618,9 @@ def get_signal_conversation_messages(
             "role": msg.role,
             "content": msg.content,
             "signal_configs": json.loads(msg.signal_configs) if msg.signal_configs else None,
+            "reasoning_snapshot": msg.reasoning_snapshot,
+            "tool_calls_log": json.loads(msg.tool_calls_log) if msg.tool_calls_log else None,
+            "is_complete": msg.is_complete,
             "created_at": msg.created_at.isoformat() if msg.created_at else None
         }
         for msg in messages
@@ -1351,10 +1354,11 @@ def _format_tool_calls_log(tool_calls_log: List[Dict]) -> str:
 
 def generate_signal_with_ai_stream(
     db: Session,
-    account_id: int,
-    user_message: str,
+    account_id: Optional[int] = None,
+    user_message: str = "",
     conversation_id: Optional[int] = None,
-    user_id: int = 1
+    user_id: int = 1,
+    llm_config: Optional[Dict[str, Any]] = None
 ):
     """
     Generate signal configuration using AI with SSE streaming.
@@ -1376,17 +1380,37 @@ def generate_signal_with_ai_stream(
     yield _sse_event("status", {"message": "Initializing AI signal generation..."})
 
     try:
-        # Get the specified AI account
-        account = db.query(Account).filter(
-            Account.id == account_id,
-            Account.account_type == "AI"
-        ).first()
+        # Get LLM config: either from llm_config param or from account_id
+        if llm_config:
+            # Use provided llm_config (e.g., from Hyper AI sub-agent call)
+            api_config = {
+                "base_url": llm_config.get("base_url"),
+                "api_key": llm_config.get("api_key"),
+                "model": llm_config.get("model"),
+                "api_format": llm_config.get("api_format", "openai")
+            }
+            model_name = llm_config.get("model", "unknown")
+            account = None
+        else:
+            # Original logic: get from AI account
+            account = db.query(Account).filter(
+                Account.id == account_id,
+                Account.account_type == "AI"
+            ).first()
 
-        if not account:
-            yield _sse_event("error", {"message": "AI account not found"})
-            return
+            if not account:
+                yield _sse_event("error", {"message": "AI account not found"})
+                return
 
-        yield _sse_event("status", {"message": f"Using model: {account.model}"})
+            api_config = {
+                "base_url": account.base_url,
+                "api_key": account.api_key,
+                "model": account.model,
+                "api_format": "openai"
+            }
+            model_name = account.model
+
+        yield _sse_event("status", {"message": f"Using model: {model_name}"})
 
         # Get or create conversation
         conversation = None
@@ -1396,11 +1420,17 @@ def generate_signal_with_ai_stream(
                 AiSignalConversation.user_id == user_id
             ).first()
 
+        is_new_conversation = False
         if not conversation:
             title = user_message[:50] + "..." if len(user_message) > 50 else user_message
             conversation = AiSignalConversation(user_id=user_id, title=title)
             db.add(conversation)
             db.flush()
+            is_new_conversation = True
+
+        # Notify frontend of conversation ID immediately (so it can recover from interruptions)
+        if is_new_conversation:
+            yield _sse_event("conversation_created", {"conversation_id": conversation.id})
 
         # Save user message
         user_msg = AiSignalMessage(
@@ -1412,29 +1442,39 @@ def generate_signal_with_ai_stream(
         db.flush()
 
         # Build message history with compression support
-        from services.ai_context_compression_service import compress_messages, update_compression_points
+        from services.ai_context_compression_service import (
+            compress_messages, update_compression_points,
+            restore_tool_calls_to_messages,
+            get_last_compression_point, filter_messages_by_compression,
+        )
 
         messages = [{"role": "system", "content": SIGNAL_SYSTEM_PROMPT}]
 
-        # Get more messages, compression will handle limits
+        # Check compression points - inject summary for compressed messages
+        cp = get_last_compression_point(conversation)
+        if cp and cp.get("summary"):
+            messages.append({
+                "role": "system",
+                "content": f"[Previous conversation summary]\n{cp['summary']}"
+            })
+
+        # Load history, filter by compression point
         history_messages = db.query(AiSignalMessage).filter(
             AiSignalMessage.conversation_id == conversation.id,
             AiSignalMessage.id != user_msg.id
         ).order_by(AiSignalMessage.created_at).limit(100).all()
 
-        last_message_id = None
-        for msg in history_messages:
-            messages.append({"role": msg.role, "content": msg.content})
-            last_message_id = msg.id
+        history_messages = filter_messages_by_compression(history_messages, cp)
+
+        last_message_id = history_messages[-1].id if history_messages else None
+
+        # Restore tool_calls into proper LLM message format
+        history_dicts = [{"role": m.role, "content": m.content, "tool_calls_log": m.tool_calls_log} for m in history_messages]
+        restored = restore_tool_calls_to_messages(history_dicts, api_config.get("api_format", "openai"))
+        messages.extend(restored)
         messages.append({"role": "user", "content": user_message})
 
-        # Apply compression if needed
-        api_config = {
-            "base_url": account.base_url,
-            "api_key": account.api_key,
-            "model": account.model,
-            "api_format": "openai"
-        }
+        # Apply compression if needed (api_config already set above)
         comp_result = compress_messages(messages, api_config, db=db)
         messages = comp_result["messages"]
 
@@ -1446,13 +1486,13 @@ def generate_signal_with_ai_stream(
             )
 
         # Build endpoints and headers
-        endpoints = build_chat_completion_endpoints(account.base_url, account.model)
+        endpoints = build_chat_completion_endpoints(api_config["base_url"], api_config["model"])
         if not endpoints:
             yield _sse_event("error", {"message": "Invalid base_url configuration"})
             return
 
         # Use unified headers builder (see build_llm_headers in ai_decision_service)
-        headers = build_llm_headers("openai", account.api_key)
+        headers = build_llm_headers(api_config.get("api_format", "openai"), api_config["api_key"])
 
         yield _sse_event("status", {"message": "Analyzing your request..."})
 
@@ -1468,8 +1508,7 @@ def generate_signal_with_ai_stream(
             tool_round += 1
             is_last_round = (tool_round == max_tool_rounds)
 
-            yield _sse_event("status", {
-                "message": f"Processing round {tool_round}/{max_tool_rounds}...",
+            yield _sse_event("tool_round", {
                 "round": tool_round,
                 "max_rounds": max_tool_rounds
             })
@@ -1482,7 +1521,7 @@ def generate_signal_with_ai_stream(
 
             # Use unified payload builder (see build_llm_payload in ai_decision_service)
             request_payload = build_llm_payload(
-                model=account.model,
+                model=api_config["model"],
                 messages=messages,
                 api_format="openai",
                 tools=SIGNAL_TOOLS if not is_last_round else None,
@@ -1526,7 +1565,29 @@ def generate_signal_with_ai_stream(
                 error_detail = "; ".join(error_parts) if error_parts else "No response from API"
                 logger.error(f"[AI Signal Gen Stream {request_id}] API failed at round {tool_round}: {error_detail}")
                 system_logger.add_log("ERROR", "ai_signal_gen", f"API failed at round {tool_round}", {"error": error_detail, "request_id": request_id})
-                yield _sse_event("error", {"message": f"API request failed: {error_detail}"})
+
+                # If we have tool calls already, save as interrupted (recoverable)
+                if tool_calls_log:
+                    reasoning_snapshot = "\n\n---\n\n".join(reasoning_snapshot_parts) if reasoning_snapshot_parts else None
+                    assistant_msg = AiSignalMessage(
+                        conversation_id=conversation.id,
+                        role="assistant",
+                        content=f"**[Interrupted at round {tool_round}]** {error_detail}",
+                        reasoning_snapshot=reasoning_snapshot,
+                        tool_calls_log=json.dumps(tool_calls_log),
+                        is_complete=False,
+                        interrupt_reason=f"Round {tool_round}: {error_detail}"
+                    )
+                    db.add(assistant_msg)
+                    db.commit()
+                    yield _sse_event("interrupted", {
+                        "message_id": assistant_msg.id,
+                        "conversation_id": conversation.id,
+                        "round": tool_round,
+                        "error": error_detail
+                    })
+                else:
+                    yield _sse_event("error", {"message": f"API request failed: {error_detail}"})
                 return
 
             # Parse response
@@ -1540,7 +1601,7 @@ def generate_signal_with_ai_stream(
                 return
 
             tool_calls = message.get("tool_calls", [])
-            reasoning_content = message.get("reasoning_content", "")
+            reasoning_content = message.get("reasoning_content", "") or extract_reasoning(message)
             content = message.get("content", "")
 
             # Send reasoning content if present
@@ -1548,11 +1609,6 @@ def generate_signal_with_ai_stream(
                 yield _sse_event("reasoning", {"content": reasoning_content})
                 # Collect reasoning for storage
                 reasoning_snapshot_parts.append(reasoning_content)
-                tool_calls_log.append({
-                    "type": "reasoning",
-                    "round": tool_round,
-                    "content": reasoning_content
-                })
 
             # Send content if present
             if content:
@@ -1589,13 +1645,11 @@ def generate_signal_with_ai_stream(
                         "result": tool_result_parsed
                     })
 
-                    # Log tool call for storage
+                    # Log tool call for storage (unified format: {tool, args, result:string})
                     tool_calls_log.append({
-                        "type": "tool_call",
-                        "round": tool_round,
-                        "name": func_name,
-                        "arguments": func_args,
-                        "result": tool_result_parsed
+                        "tool": func_name,
+                        "args": func_args,
+                        "result": tool_result
                     })
 
                     messages.append({
@@ -1624,16 +1678,14 @@ def generate_signal_with_ai_stream(
         for config in signal_configs:
             yield _sse_event("signal_config", {"config": config})
 
-        # Format tool calls log as Markdown for storage
-        analysis_markdown = _format_tool_calls_log(tool_calls_log)
-        full_content_for_storage = analysis_markdown + assistant_content if analysis_markdown else assistant_content
+        # Store content without analysis markdown (frontend renders from tool_calls_log/reasoning_snapshot)
         reasoning_snapshot = "\n\n---\n\n".join(reasoning_snapshot_parts) if reasoning_snapshot_parts else None
 
         # Save assistant message with tool calls log and reasoning
         assistant_msg = AiSignalMessage(
             conversation_id=conversation.id,
             role="assistant",
-            content=full_content_for_storage,
+            content=assistant_content,
             signal_configs=json.dumps(signal_configs) if signal_configs else None,
             reasoning_snapshot=reasoning_snapshot,
             tool_calls_log=json.dumps(tool_calls_log) if tool_calls_log else None,

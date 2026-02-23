@@ -210,10 +210,10 @@ def check_deduplication(
     try:
         from services.ai_decision_service import build_chat_completion_endpoints, build_llm_payload, build_llm_headers
 
+        endpoints = build_chat_completion_endpoints(base_url, model)
         if api_format == "anthropic":
-            endpoint = f"{base_url.rstrip('/')}/messages"
+            endpoint = endpoints[0] if endpoints else f"{base_url.rstrip('/')}/messages"
         else:
-            endpoints = build_chat_completion_endpoints(base_url, model)
             endpoint = endpoints[0] if endpoints else f"{base_url}/chat/completions"
 
         # Use unified headers/payload builders (see build_llm_payload in ai_decision_service)
@@ -319,29 +319,42 @@ def add_memory_with_dedup(
 
 
 # Memory extraction prompt for compression
-EXTRACT_MEMORIES_PROMPT = """Analyze this conversation and extract important user insights to remember.
+EXTRACT_MEMORIES_PROMPT = """You are a memory extraction assistant for a crypto trading AI platform.
+Analyze this conversation and extract key user insights worth remembering long-term.
 
 Conversation:
 {conversation}
 
-Extract memories in these categories:
-- preference: User's trading preferences and style
-- decision: Important trading decisions made
-- lesson: Lessons learned from trades
-- insight: Market insights and observations
+## Categories and what to extract:
 
-For each memory, provide:
-- category: One of the above categories
-- content: The insight to remember (1-2 sentences)
-- importance: Score from 0.0 to 1.0
+**preference** (importance 0.7-0.9):
+- Trading style (scalping, swing, intraday), risk tolerance, leverage preferences
+- Preferred coins/pairs, timeframes, position sizing rules
+- Daily routines (e.g. close all positions before UTC 23:30)
 
-Respond in JSON format:
-{{"memories": [
-  {{"category": "preference", "content": "...", "importance": 0.8}},
-  ...
-]}}
+**decision** (importance 0.6-0.8):
+- Strategy parameters chosen (e.g. EMA periods, RSI thresholds, TP/SL percentages)
+- Specific trading rules or conditions the user confirmed
+- Configuration changes (e.g. switched model, changed leverage from 5x to 3x)
 
-Only extract truly important insights. If nothing significant, return empty list."""
+**lesson** (importance 0.7-0.9):
+- Losses or mistakes and what the user learned
+- What worked well and why
+- Market behavior patterns the user identified
+
+**insight** (importance 0.5-0.7):
+- Market observations (e.g. "BTC tends to dump after funding rate > 0.1%")
+- Correlations or patterns discussed
+- Backtesting results and conclusions
+
+## Rules:
+- Each memory should be specific and self-contained (readable without context)
+- Include concrete numbers/parameters when available
+- Max 5 memories per extraction, only truly important ones
+- If nothing significant, return empty list
+
+Respond in JSON:
+{{"memories": [{{"category": "...", "content": "...", "importance": 0.8}}]}}"""
 
 
 def extract_memories_from_conversation(
@@ -369,10 +382,10 @@ def extract_memories_from_conversation(
     try:
         from services.ai_decision_service import build_chat_completion_endpoints, build_llm_payload, build_llm_headers
 
+        endpoints = build_chat_completion_endpoints(base_url, model)
         if api_format == "anthropic":
-            endpoint = f"{base_url.rstrip('/')}/messages"
+            endpoint = endpoints[0] if endpoints else f"{base_url.rstrip('/')}/messages"
         else:
-            endpoints = build_chat_completion_endpoints(base_url, model)
             endpoint = endpoints[0] if endpoints else f"{base_url}/chat/completions"
 
         # Use unified headers/payload builders (see build_llm_payload in ai_decision_service)
@@ -424,27 +437,15 @@ def process_compression_memories(
     Returns:
         Number of memories added/updated
     """
-    # DEBUG: Log when compression memory extraction is triggered
-    print(f"[DEBUG] process_compression_memories TRIGGERED", flush=True)
-    print(f"[DEBUG] conversation_text length: {len(conversation_text)}", flush=True)
-    print(f"[DEBUG] api_config model: {api_config.get('model', 'unknown')}", flush=True)
-
     memories = extract_memories_from_conversation(conversation_text, api_config)
 
-    # DEBUG: Log extracted memories
-    print(f"[DEBUG] Extracted {len(memories)} memories from LLM", flush=True)
-    for i, mem in enumerate(memories):
-        print(f"[DEBUG] Memory {i}: category={mem.get('category')}, content={mem.get('content', '')[:100]}...", flush=True)
-
     count = 0
-
     for mem in memories:
         category = mem.get("category", "context")
         content = mem.get("content", "")
         importance = mem.get("importance", 0.5)
 
         if not content or category not in MEMORY_CATEGORIES:
-            print(f"[DEBUG] Skipping memory: category={category}, content_empty={not content}", flush=True)
             continue
 
         result = add_memory_with_dedup(
@@ -454,10 +455,6 @@ def process_compression_memories(
         )
         if result:
             count += 1
-            print(f"[DEBUG] Memory saved: id={result.get('id')}, action={result.get('action')}", flush=True)
-        else:
-            print(f"[DEBUG] Memory not saved (dedup or error)", flush=True)
 
-    print(f"[DEBUG] process_compression_memories COMPLETED: {count} memories saved", flush=True)
     logger.info(f"Processed {count} memories from compression")
     return count

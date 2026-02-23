@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 # Sub-agent tool definitions in OpenAI format
+# Note: Sub-agents inherit Hyper AI's LLM configuration, no account_id needed
 SUBAGENT_TOOLS = [
     {
         "type": "function",
@@ -45,13 +46,9 @@ The sub-agent has access to variables reference and can preview prompts with rea
                     "conversation_id": {
                         "type": "integer",
                         "description": "Optional: Continue a previous Prompt AI conversation"
-                    },
-                    "account_id": {
-                        "type": "integer",
-                        "description": "AI account ID to use for LLM calls"
                     }
                 },
-                "required": ["task", "account_id"]
+                "required": ["task"]
             }
         }
     },
@@ -78,16 +75,12 @@ The sub-agent can query market data, validate code, and run test executions.""",
                         "type": "integer",
                         "description": "Optional: Continue a previous Program AI conversation"
                     },
-                    "account_id": {
-                        "type": "integer",
-                        "description": "AI account ID to use for LLM calls"
-                    },
                     "program_id": {
                         "type": "integer",
                         "description": "Optional: Program ID if editing existing program"
                     }
                 },
-                "required": ["task", "account_id"]
+                "required": ["task"]
             }
         }
     },
@@ -113,13 +106,9 @@ The sub-agent can query available signals and run backtests.""",
                     "conversation_id": {
                         "type": "integer",
                         "description": "Optional: Continue a previous Signal AI conversation"
-                    },
-                    "account_id": {
-                        "type": "integer",
-                        "description": "AI account ID to use for LLM calls"
                     }
                 },
-                "required": ["task", "account_id"]
+                "required": ["task"]
             }
         }
     },
@@ -145,13 +134,9 @@ The sub-agent can query decision logs and provide detailed analysis.""",
                     "conversation_id": {
                         "type": "integer",
                         "description": "Optional: Continue a previous Attribution AI conversation"
-                    },
-                    "account_id": {
-                        "type": "integer",
-                        "description": "AI account ID to use for LLM calls"
                     }
                 },
-                "required": ["task", "account_id"]
+                "required": ["task"]
             }
         }
     }
@@ -253,39 +238,35 @@ def _run_subagent_stream(generator) -> Dict[str, Any]:
 def execute_call_prompt_ai(
     db: Session,
     task: str,
-    account_id: int,
     conversation_id: Optional[int] = None,
     user_id: int = 1
 ) -> str:
     """
     Execute Prompt AI sub-agent.
     Reuses existing ai_prompt_generation_service conversation system.
+    Uses Hyper AI's LLM configuration.
     """
     from services.ai_prompt_generation_service import generate_prompt_with_ai_stream
-    from database.models import Account
+    from services.hyper_ai_service import get_llm_config
 
-    logger.info(f"[call_prompt_ai] task={task[:50]}..., account_id={account_id}, conv_id={conversation_id}")
+    logger.info(f"[call_prompt_ai] task={task[:50]}..., conv_id={conversation_id}")
 
     try:
-        # Prompt AI requires Account object, not account_id
-        account = db.query(Account).filter(
-            Account.id == account_id,
-            Account.account_type == "AI"
-        ).first()
-
-        if not account:
+        # Get Hyper AI's LLM config
+        llm_config = get_llm_config(db)
+        if not llm_config.get("configured"):
             return json.dumps({
                 "subagent": "prompt_ai",
                 "status": "failed",
-                "error": f"AI account {account_id} not found"
+                "error": "Hyper AI LLM not configured. Please configure LLM in Hyper AI settings."
             })
 
         generator = generate_prompt_with_ai_stream(
             db=db,
-            account=account,
             user_message=task,
             conversation_id=conversation_id,
-            user_id=user_id
+            user_id=user_id,
+            llm_config=llm_config
         )
 
         result = _run_subagent_stream(generator)
@@ -295,7 +276,7 @@ def execute_call_prompt_ai(
             "status": result["status"],
             "conversation_id": result["conversation_id"],
             "message_id": result["message_id"],
-            "content": result["content"][:2000] if result["content"] else None,
+            "content": result["content"],
             "tool_calls_count": len(result["tool_calls"]),
             "error": result["error"]
         })
@@ -308,7 +289,6 @@ def execute_call_prompt_ai(
 def execute_call_program_ai(
     db: Session,
     task: str,
-    account_id: int,
     conversation_id: Optional[int] = None,
     program_id: Optional[int] = None,
     user_id: int = 1
@@ -316,19 +296,30 @@ def execute_call_program_ai(
     """
     Execute Program AI sub-agent.
     Reuses existing ai_program_service conversation system.
+    Uses Hyper AI's LLM configuration.
     """
     from services.ai_program_service import generate_program_with_ai_stream
+    from services.hyper_ai_service import get_llm_config
 
-    logger.info(f"[call_program_ai] task={task[:50]}..., account_id={account_id}, conv_id={conversation_id}")
+    logger.info(f"[call_program_ai] task={task[:50]}..., conv_id={conversation_id}")
 
     try:
+        # Get Hyper AI's LLM config
+        llm_config = get_llm_config(db)
+        if not llm_config.get("configured"):
+            return json.dumps({
+                "subagent": "program_ai",
+                "status": "failed",
+                "error": "Hyper AI LLM not configured. Please configure LLM in Hyper AI settings."
+            })
+
         generator = generate_program_with_ai_stream(
             db=db,
-            account_id=account_id,
             user_message=task,
             conversation_id=conversation_id,
             program_id=program_id,
-            user_id=user_id
+            user_id=user_id,
+            llm_config=llm_config
         )
 
         result = _run_subagent_stream(generator)
@@ -338,7 +329,7 @@ def execute_call_program_ai(
             "status": result["status"],
             "conversation_id": result["conversation_id"],
             "message_id": result["message_id"],
-            "content": result["content"][:2000] if result["content"] else None,
+            "content": result["content"],
             "tool_calls_count": len(result["tool_calls"]),
             "error": result["error"]
         })
@@ -351,25 +342,35 @@ def execute_call_program_ai(
 def execute_call_signal_ai(
     db: Session,
     task: str,
-    account_id: int,
     conversation_id: Optional[int] = None,
     user_id: int = 1
 ) -> str:
     """
     Execute Signal AI sub-agent.
     Reuses existing ai_signal_generation_service conversation system.
+    Uses Hyper AI's LLM configuration.
     """
     from services.ai_signal_generation_service import generate_signal_with_ai_stream
+    from services.hyper_ai_service import get_llm_config
 
-    logger.info(f"[call_signal_ai] task={task[:50]}..., account_id={account_id}, conv_id={conversation_id}")
+    logger.info(f"[call_signal_ai] task={task[:50]}..., conv_id={conversation_id}")
 
     try:
+        # Get Hyper AI's LLM config
+        llm_config = get_llm_config(db)
+        if not llm_config.get("configured"):
+            return json.dumps({
+                "subagent": "signal_ai",
+                "status": "failed",
+                "error": "Hyper AI LLM not configured. Please configure LLM in Hyper AI settings."
+            })
+
         generator = generate_signal_with_ai_stream(
             db=db,
-            account_id=account_id,
             user_message=task,
             conversation_id=conversation_id,
-            user_id=user_id
+            user_id=user_id,
+            llm_config=llm_config
         )
 
         result = _run_subagent_stream(generator)
@@ -379,7 +380,7 @@ def execute_call_signal_ai(
             "status": result["status"],
             "conversation_id": result["conversation_id"],
             "message_id": result["message_id"],
-            "content": result["content"][:2000] if result["content"] else None,
+            "content": result["content"],
             "tool_calls_count": len(result["tool_calls"]),
             "error": result["error"]
         })
@@ -392,25 +393,35 @@ def execute_call_signal_ai(
 def execute_call_attribution_ai(
     db: Session,
     task: str,
-    account_id: int,
     conversation_id: Optional[int] = None,
     user_id: int = 1
 ) -> str:
     """
     Execute Attribution AI sub-agent.
     Reuses existing ai_attribution_service conversation system.
+    Uses Hyper AI's LLM configuration.
     """
     from services.ai_attribution_service import generate_attribution_analysis_stream
+    from services.hyper_ai_service import get_llm_config
 
-    logger.info(f"[call_attribution_ai] task={task[:50]}..., account_id={account_id}, conv_id={conversation_id}")
+    logger.info(f"[call_attribution_ai] task={task[:50]}..., conv_id={conversation_id}")
 
     try:
+        # Get Hyper AI's LLM config
+        llm_config = get_llm_config(db)
+        if not llm_config.get("configured"):
+            return json.dumps({
+                "subagent": "attribution_ai",
+                "status": "failed",
+                "error": "Hyper AI LLM not configured. Please configure LLM in Hyper AI settings."
+            })
+
         generator = generate_attribution_analysis_stream(
             db=db,
-            account_id=account_id,
             user_message=task,
             conversation_id=conversation_id,
-            user_id=user_id
+            user_id=user_id,
+            llm_config=llm_config
         )
 
         result = _run_subagent_stream(generator)
@@ -420,7 +431,7 @@ def execute_call_attribution_ai(
             "status": result["status"],
             "conversation_id": result["conversation_id"],
             "message_id": result["message_id"],
-            "content": result["content"][:2000] if result["content"] else None,
+            "content": result["content"],
             "tool_calls_count": len(result["tool_calls"]),
             "error": result["error"]
         })
@@ -439,13 +450,13 @@ def execute_subagent_tool(
     """
     Execute a sub-agent tool by name.
     This is the main entry point for Hyper AI to call sub-agents.
+    Sub-agents inherit Hyper AI's LLM configuration automatically.
     """
     try:
         if tool_name == "call_prompt_ai":
             return execute_call_prompt_ai(
                 db,
                 task=arguments.get("task", ""),
-                account_id=arguments.get("account_id"),
                 conversation_id=arguments.get("conversation_id"),
                 user_id=user_id
             )
@@ -454,7 +465,6 @@ def execute_subagent_tool(
             return execute_call_program_ai(
                 db,
                 task=arguments.get("task", ""),
-                account_id=arguments.get("account_id"),
                 conversation_id=arguments.get("conversation_id"),
                 program_id=arguments.get("program_id"),
                 user_id=user_id
@@ -464,7 +474,6 @@ def execute_subagent_tool(
             return execute_call_signal_ai(
                 db,
                 task=arguments.get("task", ""),
-                account_id=arguments.get("account_id"),
                 conversation_id=arguments.get("conversation_id"),
                 user_id=user_id
             )
@@ -473,7 +482,6 @@ def execute_subagent_tool(
             return execute_call_attribution_ai(
                 db,
                 task=arguments.get("task", ""),
-                account_id=arguments.get("account_id"),
                 conversation_id=arguments.get("conversation_id"),
                 user_id=user_id
             )

@@ -23,7 +23,7 @@ from database.models import (
 )
 from database.snapshot_connection import SnapshotSessionLocal
 from database.snapshot_models import HyperliquidTrade
-from services.ai_decision_service import build_chat_completion_endpoints, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers
+from services.ai_decision_service import build_chat_completion_endpoints, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -658,10 +658,11 @@ def extract_diagnosis_results(content: str) -> List[Dict]:
 
 def generate_attribution_analysis_stream(
     db: Session,
-    account_id: int,
-    user_message: str,
+    account_id: Optional[int] = None,
+    user_message: str = "",
     conversation_id: Optional[int] = None,
-    user_id: int = 1
+    user_id: int = 1,
+    llm_config: Optional[Dict[str, Any]] = None
 ) -> Generator[str, None, None]:
     """Generate attribution analysis with SSE streaming"""
     start_time = time.time()
@@ -670,15 +671,33 @@ def generate_attribution_analysis_stream(
     logger.info(f"[AI Attribution {request_id}] Starting: account_id={account_id}")
 
     try:
-        # Get AI account
-        account = db.query(Account).filter(
-            Account.id == account_id,
-            Account.account_type == "AI"
-        ).first()
+        # Get LLM config: either from llm_config param or from account_id
+        if llm_config:
+            # Use provided llm_config (e.g., from Hyper AI sub-agent call)
+            api_config = {
+                "base_url": llm_config.get("base_url"),
+                "api_key": llm_config.get("api_key"),
+                "model": llm_config.get("model"),
+                "api_format": llm_config.get("api_format", "openai")
+            }
+            account = None
+        else:
+            # Original logic: get from AI account
+            account = db.query(Account).filter(
+                Account.id == account_id,
+                Account.account_type == "AI"
+            ).first()
 
-        if not account:
-            yield f"event: error\ndata: {json.dumps({'message': 'AI account not found'})}\n\n"
-            return
+            if not account:
+                yield f"event: error\ndata: {json.dumps({'message': 'AI account not found'})}\n\n"
+                return
+
+            api_config = {
+                "base_url": account.base_url,
+                "api_key": account.api_key,
+                "model": account.model,
+                "api_format": "openai"
+            }
 
         # Get or create conversation
         conversation = None
@@ -688,11 +707,16 @@ def generate_attribution_analysis_stream(
                 AiAttributionConversation.user_id == user_id
             ).first()
 
+        is_new_conversation = False
         if not conversation:
             title = user_message[:50] + "..." if len(user_message) > 50 else user_message
             conversation = AiAttributionConversation(user_id=user_id, title=title)
             db.add(conversation)
             db.flush()
+            is_new_conversation = True
+
+        if is_new_conversation:
+            yield f"event: conversation_created\ndata: {json.dumps({'conversation_id': conversation.id})}\n\n"
 
         # Save user message
         user_msg = AiAttributionMessage(
@@ -706,30 +730,40 @@ def generate_attribution_analysis_stream(
         yield f"event: status\ndata: {json.dumps({'message': 'Analyzing...'})}\n\n"
 
         # Build message history with compression support
-        from services.ai_context_compression_service import compress_messages, update_compression_points
+        from services.ai_context_compression_service import (
+            compress_messages, update_compression_points,
+            restore_tool_calls_to_messages,
+            get_last_compression_point, filter_messages_by_compression,
+        )
 
         messages = [{"role": "system", "content": ATTRIBUTION_SYSTEM_PROMPT}]
 
-        # Get more messages, compression will handle limits
+        # Check compression points - inject summary for compressed messages
+        cp = get_last_compression_point(conversation)
+        if cp and cp.get("summary"):
+            messages.append({
+                "role": "system",
+                "content": f"[Previous conversation summary]\n{cp['summary']}"
+            })
+
+        # Load history, filter by compression point
         history = db.query(AiAttributionMessage).filter(
             AiAttributionMessage.conversation_id == conversation.id,
             AiAttributionMessage.id != user_msg.id
         ).order_by(AiAttributionMessage.created_at).limit(100).all()
 
-        last_message_id = None
-        for msg in history:
-            messages.append({"role": msg.role, "content": msg.content})
-            last_message_id = msg.id
+        history = filter_messages_by_compression(history, cp)
+
+        last_message_id = history[-1].id if history else None
+
+        # Restore tool_calls into proper LLM message format
+        history_dicts = [{"role": m.role, "content": m.content, "tool_calls_log": m.tool_calls_log} for m in history]
+        restored = restore_tool_calls_to_messages(history_dicts, api_config.get("api_format", "openai"))
+        messages.extend(restored)
 
         messages.append({"role": "user", "content": user_message})
 
-        # Apply compression if needed
-        api_config = {
-            "base_url": account.base_url,
-            "api_key": account.api_key,
-            "model": account.model,
-            "api_format": "openai"
-        }
+        # Apply compression if needed (api_config already set above)
         comp_result = compress_messages(messages, api_config, db=db)
         messages = comp_result["messages"]
 
@@ -741,13 +775,13 @@ def generate_attribution_analysis_stream(
             )
 
         # Call LLM with Function Calling
-        endpoints = build_chat_completion_endpoints(account.base_url, account.model)
+        endpoints = build_chat_completion_endpoints(api_config["base_url"], api_config["model"])
         if not endpoints:
             yield f"event: error\ndata: {json.dumps({'message': 'Invalid API configuration'})}\n\n"
             return
 
         # Use unified headers builder (see build_llm_headers in ai_decision_service)
-        headers = build_llm_headers("openai", account.api_key)
+        headers = build_llm_headers(api_config.get("api_format", "openai"), api_config["api_key"])
 
         # Function calling loop
         max_rounds = 15
@@ -760,6 +794,8 @@ def generate_attribution_analysis_stream(
         for round_num in range(max_rounds):
             is_last = (round_num == max_rounds - 1)
 
+            yield f"event: tool_round\ndata: {json.dumps({'round': round_num + 1, 'max_rounds': max_rounds})}\n\n"
+
             if is_last:
                 messages.append({
                     "role": "user",
@@ -768,7 +804,7 @@ def generate_attribution_analysis_stream(
 
             # Use unified payload builder (see build_llm_payload in ai_decision_service)
             request_payload = build_llm_payload(
-                model=account.model,
+                model=api_config["model"],
                 messages=messages,
                 api_format="openai",
                 tools=ATTRIBUTION_TOOLS if not is_last else None,
@@ -810,14 +846,30 @@ def generate_attribution_analysis_stream(
                     error_parts.append(f"response={last_response_text[:500]}")
                 error_detail = "; ".join(error_parts) if error_parts else "No response from API"
                 logger.error(f"[AI Attribution] API failed at round {round_num + 1}: {error_detail}")
-                yield f"event: error\ndata: {json.dumps({'message': f'API request failed: {error_detail}'})}\n\n"
+
+                if tool_calls_log:
+                    reasoning_snapshot = "\n\n---\n\n".join(all_reasoning_parts) if all_reasoning_parts else None
+                    assistant_msg = AiAttributionMessage(
+                        conversation_id=conversation.id,
+                        role="assistant",
+                        content=f"**[Interrupted at round {round_num + 1}]** {error_detail}",
+                        reasoning_snapshot=reasoning_snapshot,
+                        tool_calls_log=json.dumps(tool_calls_log),
+                        is_complete=False,
+                        interrupt_reason=f"Round {round_num + 1}: {error_detail}"
+                    )
+                    db.add(assistant_msg)
+                    db.commit()
+                    yield f"event: interrupted\ndata: {json.dumps({'message_id': assistant_msg.id, 'conversation_id': conversation.id, 'round': round_num + 1, 'error': error_detail})}\n\n"
+                else:
+                    yield f"event: error\ndata: {json.dumps({'message': f'API request failed: {error_detail}'})}\n\n"
                 return
 
             resp_json = response.json()
             message = resp_json["choices"][0]["message"]
             tool_calls = message.get("tool_calls", [])
             content = message.get("content", "")
-            reasoning = message.get("reasoning_content", "")
+            reasoning = message.get("reasoning_content", "") or extract_reasoning(message)
 
             if reasoning:
                 yield f"event: reasoning\ndata: {json.dumps({'content': reasoning[:200]})}\n\n"
@@ -842,16 +894,11 @@ def generate_attribution_analysis_stream(
                     result = _execute_tool(db, func_name, func_args)
                     yield f"event: tool_result\ndata: {json.dumps({'name': func_name, 'result': json.loads(result)})}\n\n"
 
-                    # Collect tool call and result for storage
+                    # Collect tool call for storage (unified format: {tool, args, result:string})
                     tool_calls_log.append({
-                        "type": "tool_call",
-                        "name": func_name,
-                        "arguments": func_args
-                    })
-                    tool_calls_log.append({
-                        "type": "tool_result",
-                        "name": func_name,
-                        "result": json.loads(result)
+                        "tool": func_name,
+                        "args": func_args,
+                        "result": result
                     })
 
                     messages.append({

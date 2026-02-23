@@ -137,7 +137,7 @@
     "continueMessage": "请继续",
     "continueButton": "继续",
     "compressionPoint": "上下文已压缩",
-    "contextWarning": "上下文: {{percent}}% · 即将压缩",
+    "contextWarning": "上下文剩余: {{percent}}% · 即将压缩",
     "reasoningProcess": "推理过程"
   },
   "sidebar": {
@@ -391,7 +391,7 @@
       "poolCreated": "信号池已创建",
       "createPool": "创建信号池",
       "compressionPoint": "上下文已压缩",
-      "contextWarning": "上下文: {{percent}}% · 即将压缩"
+      "contextWarning": "上下文剩余: {{percent}}% · 即将压缩"
     }
   },
   "kline": {
@@ -1117,7 +1117,7 @@
       "analysisProcess": "分析过程",
       "steps": "步",
       "compressionPoint": "上下文已压缩",
-      "contextWarning": "上下文: {{percent}}% · 即将压缩"
+      "contextWarning": "上下文剩余: {{percent}}% · 即将压缩"
     }
   },
   "promptBacktest": {
@@ -1384,7 +1384,7 @@
       "connectionLost": "连接中断，正在重新加载已保存的进度...",
       "toolCallsDetail": "工具调用详情 ({{count}} 轮)",
       "compressionPoint": "上下文已压缩",
-      "contextWarning": "上下文: {{percent}}% · 即将压缩"
+      "contextWarning": "上下文剩余: {{percent}}% · 即将压缩"
     }
   },
   "binance": {
@@ -1440,7 +1440,7 @@
     "continueMessage": "请继续",
     "connectionLost": "连接丢失",
     "compressionPoint": "上下文已压缩",
-    "contextWarning": "上下文: {{percent}}% · 即将压缩",
+    "contextWarning": "上下文剩余: {{percent}}% · 即将压缩",
     "onboarding": {
       "welcome": "欢迎使用 Hyper Alpha Arena",
       "configureAi": "配置 Hyper AI 轻松上手",

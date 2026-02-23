@@ -839,11 +839,12 @@ async def list_ai_conversations(
 @router.get("/ai-conversations/{conversation_id}/messages")
 async def get_conversation_messages(
     conversation_id: int,
+    account_id: Optional[int] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Get messages for a specific conversation with compression points and token usage."""
     from database.models import AiProgramConversation, AiProgramMessage, HyperAiProfile
-    from services.ai_context_compression_service import calculate_token_usage
+    from services.ai_context_compression_service import calculate_token_usage, restore_tool_calls_to_messages
 
     user = db.query(User).first()
     user_id = user.id if user else 1
@@ -907,12 +908,40 @@ async def get_conversation_messages(
         except (json.JSONDecodeError, TypeError):
             compression_points = []
 
-    # Calculate token usage for warning display
+    # Determine model for token calculation: prefer account model, fallback to global
+    token_model = None
+    api_format = "openai"
+    if account_id:
+        account = db.query(Account).filter(Account.id == account_id).first()
+        if account and account.model:
+            token_model = account.model
+            from services.ai_decision_service import detect_api_format
+            _, fmt = detect_api_format(account.base_url or "")
+            api_format = fmt or "openai"
+    if not token_model:
+        profile = db.query(HyperAiProfile).first()
+        if profile and profile.llm_model:
+            token_model = profile.llm_model
+            from services.hyper_ai_service import get_llm_config
+            llm_config = get_llm_config(db)
+            api_format = llm_config.get("api_format", "openai")
+
+    # Calculate token usage (only messages after compression point + summary)
     token_usage = None
-    profile = db.query(HyperAiProfile).first()
-    if profile and profile.llm_model and result:
-        msg_list = [{"role": m.role, "content": m.content} for m in result]
-        token_usage = calculate_token_usage(msg_list, profile.llm_model)
+    if token_model and result:
+        from services.ai_context_compression_service import get_last_compression_point
+
+        cp = get_last_compression_point(conversation)
+        cp_msg_id = cp.get("message_id", 0) if cp else 0
+        filtered = [m for m in result if m.id > cp_msg_id]
+
+        msg_list = restore_tool_calls_to_messages(
+            [{"role": m.role, "content": m.content, "tool_calls_log": m.tool_calls_log} for m in filtered],
+            api_format
+        )
+        if cp and cp.get("summary"):
+            msg_list.insert(0, {"role": "system", "content": cp["summary"]})
+        token_usage = calculate_token_usage(msg_list, token_model)
 
     return {
         "messages": result,

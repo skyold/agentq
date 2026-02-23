@@ -790,6 +790,7 @@ class AiSignalMessage(Base):
     reasoning_snapshot = Column(Text, nullable=True)  # AI reasoning process (thinking)
     tool_calls_log = Column(Text, nullable=True)  # JSON: tool calls and results
     is_complete = Column(Boolean, nullable=True, default=True)  # False if interrupted
+    interrupt_reason = Column(Text, nullable=True)  # API error, timeout, user cancel, etc.
 
     created_at = Column(TIMESTAMP, server_default=func.current_timestamp(), index=True)
 
@@ -836,6 +837,7 @@ class AiAttributionMessage(Base):
     reasoning_snapshot = Column(Text, nullable=True)  # AI reasoning process
     tool_calls_log = Column(Text, nullable=True)  # JSON: tool calls and results log
     is_complete = Column(Boolean, nullable=True, default=True)  # False if interrupted
+    interrupt_reason = Column(Text, nullable=True)  # API error, timeout, user cancel, etc.
 
     created_at = Column(TIMESTAMP, server_default=func.current_timestamp(), index=True)
 

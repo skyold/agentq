@@ -134,7 +134,7 @@
     "continueMessage": "Please continue",
     "continueButton": "Continue",
     "compressionPoint": "Context compressed",
-    "contextWarning": "Context: {{percent}}% · Compressing soon",
+    "contextWarning": "Context remaining: {{percent}}% · Compressing soon",
     "reasoningProcess": "Reasoning process"
   },
   "sidebar": {
@@ -470,7 +470,7 @@
       "poolCreated": "Pool Created",
       "createPool": "Create Signal Pool",
       "compressionPoint": "Context compressed",
-      "contextWarning": "Context: {{percent}}% · Compressing soon"
+      "contextWarning": "Context remaining: {{percent}}% · Compressing soon"
     }
   },
   "kline": {
@@ -1098,7 +1098,7 @@
       "analysisProcess": "Analysis Process",
       "steps": "steps",
       "compressionPoint": "Context compressed",
-      "contextWarning": "Context: {{percent}}% · Compressing soon"
+      "contextWarning": "Context remaining: {{percent}}% · Compressing soon"
     }
   },
   "promptBacktest": {
@@ -1364,7 +1364,7 @@
       "continueMessage": "Please continue from where you left off.",
       "connectionLost": "Connection lost. Reloading saved progress...",
       "compressionPoint": "Context compressed",
-      "contextWarning": "Context: {{percent}}% · Compressing soon",
+      "contextWarning": "Context remaining: {{percent}}% · Compressing soon",
       "toolCallsDetail": "Tool Calls Detail ({{count}} rounds)"
     }
   },
@@ -1421,7 +1421,7 @@
     "continueMessage": "Please continue",
     "connectionLost": "Connection lost",
     "compressionPoint": "Context compressed",
-    "contextWarning": "Context: {{percent}}% · Compressing soon",
+    "contextWarning": "Context remaining: {{percent}}% · Compressing soon",
     "onboarding": {
       "welcome": "Welcome to Hyper Alpha Arena",
       "configureAi": "Configure Hyper AI to get started",

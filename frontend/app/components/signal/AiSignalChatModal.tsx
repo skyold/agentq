@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/select'
 import PacmanLoader from '@/components/ui/pacman-loader'
 import { TradingAccount } from '@/lib/api'
+import { Wrench } from 'lucide-react'
 
 // Exchange logos
 const HyperliquidLogo = () => (
@@ -84,6 +85,12 @@ interface AnalysisEntry {
   result?: Record<string, unknown>
 }
 
+interface ToolCallLogEntry {
+  tool: string
+  args: Record<string, unknown>
+  result: string
+}
+
 interface Message {
   id: number
   role: 'user' | 'assistant'
@@ -92,6 +99,10 @@ interface Message {
   isStreaming?: boolean
   statusText?: string
   analysisLog?: AnalysisEntry[]
+  toolCallsLog?: ToolCallLogEntry[]
+  reasoningSnapshot?: string | null
+  isInterrupted?: boolean
+  interruptedRound?: number
 }
 
 interface Conversation {
@@ -176,6 +187,16 @@ export default function AiSignalChatModal({
     }
   }, [currentConversationId])
 
+  // Refresh token usage when trader changes (without reloading messages)
+  useEffect(() => {
+    if (!currentConversationId || !selectedAccountId) return
+    const params = `?account_id=${selectedAccountId}`
+    fetch(`/api/signals/ai-conversations/${currentConversationId}/messages${params}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.token_usage !== undefined) setTokenUsage(data.token_usage) })
+      .catch(() => {})
+  }, [selectedAccountId])
+
   const loadConversations = async () => {
     setLoadingConversations(true)
     try {
@@ -193,10 +214,28 @@ export default function AiSignalChatModal({
 
   const loadMessages = async (conversationId: number) => {
     try {
-      const response = await fetch(`/api/signals/ai-conversations/${conversationId}/messages`)
+      const params = selectedAccountId ? `?account_id=${selectedAccountId}` : ''
+      const response = await fetch(`/api/signals/ai-conversations/${conversationId}/messages${params}`)
       if (response.ok) {
         const data = await response.json()
-        setMessages(data.messages || [])
+        const mappedMessages = (data.messages || []).map((m: any) => {
+          // Handle both old format {type, name, arguments, result(object)} and new format {tool, args, result(string)}
+          const rawLog = m.tool_calls_log || []
+          const toolCalls = rawLog
+            .filter((e: any) => e.tool || e.type === 'tool_call')
+            .map((e: any) => ({
+              tool: e.tool || e.name || 'unknown',
+              args: e.args || e.arguments || {},
+              result: typeof e.result === 'string' ? e.result : JSON.stringify(e.result || '')
+            }))
+          return {
+            ...m,
+            toolCallsLog: toolCalls,
+            reasoningSnapshot: m.reasoning_snapshot || null,
+            isInterrupted: m.is_complete === false,
+          }
+        })
+        setMessages(mappedMessages)
         setCompressionPoints(data.compression_points || [])
         setTokenUsage(data.token_usage || null)
         // Collect all signal configs from messages
@@ -262,10 +301,10 @@ export default function AiSignalChatModal({
           const pollResponse = await fetch(`/api/ai-stream/${taskId}?offset=${offset}`)
           const pollData = await pollResponse.json()
           const { status, chunks } = pollData
-          offset = pollData.offset
+          offset = pollData.next_offset ?? (offset + (chunks?.length || 0))
 
-          for (const chunk of chunks) {
-            handleSSEEvent(chunk.event, chunk.data, tempAssistantMsgId, (updates) => {
+          for (const chunk of (chunks || [])) {
+            handleSSEEvent(chunk.event_type, chunk.data, tempAssistantMsgId, (updates) => {
               if (updates.content !== undefined) finalContent = updates.content
               if (updates.signalConfigs) finalSignalConfigs = updates.signalConfigs
               if (updates.conversationId) finalConversationId = updates.conversationId
@@ -340,7 +379,15 @@ export default function AiSignalChatModal({
     msgId: number,
     onUpdate: (updates: { content?: string; signalConfigs?: SignalConfig[]; conversationId?: number; messageId?: number }) => void
   ) => {
-    if (eventType === 'status') {
+    if (eventType === 'conversation_created') {
+      onUpdate({ conversationId: data.conversation_id as number })
+    } else if (eventType === 'tool_round') {
+      setMessages(prev => prev.map(m =>
+        m.id === msgId ? { ...m, statusText: `Round ${data.round}/${data.max_rounds}...` } : m
+      ))
+    } else if (eventType === 'retry') {
+      toast(`Retrying... (attempt ${data.attempt}/${data.max_retries})`, { icon: '🔄' })
+    } else if (eventType === 'status') {
       setMessages(prev => prev.map(m =>
         m.id === msgId ? { ...m, statusText: data.message as string } : m
       ))
@@ -374,8 +421,34 @@ export default function AiSignalChatModal({
         content: content,
         signalConfigs: signalConfigs,
       })
+      // Convert streaming analysisLog to stored formats for immediate display
+      setMessages(prev => prev.map(m => {
+        if (m.id !== msgId) return m
+        const log = m.analysisLog || []
+        const toolCallsLog = log
+          .filter(e => e.type === 'tool_call')
+          .map(e => ({
+            tool: e.name || 'unknown',
+            args: e.arguments || {},
+            result: typeof e.result === 'string' ? e.result : JSON.stringify(e.result || '')
+          }))
+        const reasoningParts = log.filter(e => e.type === 'reasoning').map(e => e.content || '')
+        const reasoningSnapshot = reasoningParts.length > 0 ? reasoningParts.join('\n\n---\n\n') : null
+        return { ...m, isStreaming: false, statusText: undefined, toolCallsLog, reasoningSnapshot }
+      }))
     } else if (eventType === 'error') {
       toast.error(data.message as string || 'AI generation failed')
+    } else if (eventType === 'interrupted') {
+      onUpdate({ conversationId: data.conversation_id as number })
+      setMessages(prev => prev.map(m =>
+        m.id === msgId ? {
+          ...m,
+          isStreaming: false,
+          isInterrupted: true,
+          interruptedRound: data.round as number,
+          statusText: ''
+        } : m
+      ))
     } else if (eventType === 'tool_call') {
       const entry: AnalysisEntry = {
         type: 'tool_call',
@@ -589,6 +662,48 @@ function ChatArea({
                         ))}
                       </div>
                     )}
+                    {/* Tool calls log - above content, HyperAI style */}
+                    {!msg.isStreaming && msg.toolCallsLog && msg.toolCallsLog.length > 0 && (
+                      <details className="mb-3 text-xs border rounded-md">
+                        <summary className="px-3 py-2 cursor-pointer bg-muted/50 hover:bg-muted font-medium flex items-center gap-1">
+                          <Wrench className="w-3 h-3" />
+                          {t('signals.aiGenerator.toolCalls', 'Tool calls')} ({msg.toolCallsLog.length})
+                        </summary>
+                        <div className="p-3 space-y-3 max-h-96 overflow-y-auto">
+                          {msg.toolCallsLog.map((entry, idx) => {
+                            const resultStr = typeof entry.result === 'string' ? entry.result : JSON.stringify(entry.result || '')
+                            return (
+                            <div key={idx} className="border-b pb-2 last:border-b-0 last:pb-0">
+                              <div className="font-medium text-blue-600 dark:text-blue-400 mb-1">
+                                {idx + 1}. {entry.tool}
+                              </div>
+                              {entry.args && Object.keys(entry.args).length > 0 && (
+                                <div className="mb-1 ml-2 text-muted-foreground">
+                                  {Object.entries(entry.args).map(([key, value]) => (
+                                    <div key={key}>{key}: {JSON.stringify(value)}</div>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="ml-2 text-green-600 dark:text-green-400">
+                                Result: {resultStr.length > 200 ? resultStr.slice(0, 200) + '...' : resultStr}
+                              </div>
+                            </div>
+                            )
+                          })}
+                        </div>
+                      </details>
+                    )}
+                    {/* Reasoning snapshot - above content, HyperAI style */}
+                    {!msg.isStreaming && msg.reasoningSnapshot && (
+                      <details className="mb-3 text-xs border rounded-md">
+                        <summary className="px-3 py-2 cursor-pointer bg-muted/50 hover:bg-muted font-medium">
+                          {t('signals.aiGenerator.reasoningProcess', 'Reasoning process')}
+                        </summary>
+                        <div className="p-3 max-h-96 overflow-y-auto">
+                          <pre className="whitespace-pre-wrap text-muted-foreground">{msg.reasoningSnapshot}</pre>
+                        </div>
+                      </details>
+                    )}
                     <div className={`text-sm prose prose-sm max-w-none ${
                       msg.role === 'user' ? 'prose-invert text-white' : 'dark:prose-invert'
                     } [&_details]:bg-muted/50 [&_details]:rounded-lg [&_details]:p-2 [&_details]:mb-3 [&_details]:text-xs [&_summary]:cursor-pointer [&_summary]:font-medium [&_summary]:text-muted-foreground [&_details>div]:mt-2 [&_details>div]:max-h-64 [&_details>div]:overflow-y-auto [&_details>div]:whitespace-pre-wrap [&_details>div]:text-muted-foreground`}>
@@ -598,6 +713,25 @@ function ChatArea({
                         <span className="text-muted-foreground italic">{t('signals.aiGenerator.generating', 'Generating...')}</span>
                       ) : null}
                     </div>
+                    {msg.isInterrupted && !loading && (
+                      <div className="mt-3 pt-3 border-t border-border/50">
+                        <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 mb-2">
+                          <span>⚠️</span>
+                          <span>{t('signals.aiGenerator.interruptedAt', { round: msg.interruptedRound, defaultValue: `Interrupted at round ${msg.interruptedRound}` })}</span>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setUserInput('Please continue from where you left off.')
+                            setTimeout(() => sendMessage(), 100)
+                          }}
+                          className="text-xs"
+                        >
+                          {t('signals.aiGenerator.continueButton', 'Continue')}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
                 {compressionPoint && (
@@ -640,8 +774,8 @@ function ChatArea({
             {t('common.keyboardHintCtrlEnter', 'Press Ctrl+Enter (Cmd+Enter on Mac) to send')}
           </p>
           {tokenUsage?.show_warning && (
-            <p className="text-xs text-muted-foreground">
-              {t('signals.contextWarning', 'Context: {{percent}}% · Compressing soon', { percent: Math.round(tokenUsage.usage_ratio * 100) })}
+            <p className="text-xs text-amber-500">
+              {t('signals.contextWarning', 'Context remaining: {{percent}}% · Compressing soon', { percent: Math.max(0, Math.round((1 - tokenUsage.usage_ratio) * 100)) })}
             </p>
           )}
         </div>

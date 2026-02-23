@@ -23,6 +23,7 @@ from services.ai_decision_service import (
     get_max_tokens,
     build_llm_payload,
     build_llm_headers,
+    extract_reasoning,
 )
 from services.ai_shared_tools import (
     SHARED_SIGNAL_TOOLS,
@@ -602,11 +603,12 @@ def execute_tool(tool_name: str, args: Dict[str, Any], request_id: str, db: Sess
 
 def generate_prompt_with_ai_stream(
     db: Session,
-    account: Account,
-    user_message: str,
+    account: Optional[Account] = None,
+    user_message: str = "",
     conversation_id: Optional[int] = None,
     user_id: int = 1,
     prompt_id: Optional[int] = None,
+    llm_config: Optional[Dict[str, Any]] = None,
 ) -> Generator[str, None, None]:
     """
     Generate trading strategy prompt using AI with SSE streaming.
@@ -624,7 +626,30 @@ def generate_prompt_with_ai_stream(
     start_time = time.time()
     request_id = f"prompt_gen_{int(start_time)}"
 
-    logger.info(f"[AI Prompt Gen {request_id}] Starting: account={account.name}, "
+    # Get LLM config: either from llm_config param or from account object
+    if llm_config:
+        # Use provided llm_config (e.g., from Hyper AI sub-agent call)
+        api_config = {
+            "base_url": llm_config.get("base_url"),
+            "api_key": llm_config.get("api_key"),
+            "model": llm_config.get("model"),
+            "api_format": llm_config.get("api_format", "openai")
+        }
+        account_name = "Hyper AI"
+    elif account:
+        # Original logic: use account object
+        api_config = {
+            "base_url": account.base_url,
+            "api_key": account.api_key,
+            "model": account.model,
+            "api_format": detect_api_format(account.base_url)[1] or "openai"
+        }
+        account_name = account.name
+    else:
+        yield f"data: {json.dumps({'type': 'error', 'content': 'No LLM configuration provided'})}\n\n"
+        return
+
+    logger.info(f"[AI Prompt Gen {request_id}] Starting: account={account_name}, "
                 f"conversation_id={conversation_id}, user_message_length={len(user_message)}")
 
     try:
@@ -688,30 +713,40 @@ def generate_prompt_with_ai_stream(
         db.flush()
 
         # Build message history with compression support
-        from services.ai_context_compression_service import compress_messages, update_compression_points
+        from services.ai_context_compression_service import (
+            compress_messages, update_compression_points,
+            restore_tool_calls_to_messages,
+            get_last_compression_point, filter_messages_by_compression,
+        )
 
         messages = [{"role": "system", "content": system_prompt}]
 
-        # Get more messages, compression will handle limits
+        # Check compression points - inject summary for compressed messages
+        cp = get_last_compression_point(conversation)
+        if cp and cp.get("summary"):
+            messages.append({
+                "role": "system",
+                "content": f"[Previous conversation summary]\n{cp['summary']}"
+            })
+
+        # Load history, filter by compression point
         history = db.query(AiPromptMessage).filter(
             AiPromptMessage.conversation_id == conversation.id,
             AiPromptMessage.id != user_msg.id
         ).order_by(AiPromptMessage.created_at).limit(100).all()
 
-        last_message_id = None
-        for msg in history:
-            messages.append({"role": msg.role, "content": msg.content})
-            last_message_id = msg.id
+        history = filter_messages_by_compression(history, cp)
+
+        last_message_id = history[-1].id if history else None
+
+        # Restore tool_calls into proper LLM message format
+        history_dicts = [{"role": m.role, "content": m.content, "tool_calls_log": m.tool_calls_log} for m in history]
+        restored = restore_tool_calls_to_messages(history_dicts, api_config.get("api_format", "openai"))
+        messages.extend(restored)
 
         messages.append({"role": "user", "content": user_message})
 
-        # Apply compression if needed
-        api_config = {
-            "base_url": account.base_url,
-            "api_key": account.api_key,
-            "model": account.model,
-            "api_format": detect_api_format(account.base_url)[1] or "openai"
-        }
+        # Apply compression if needed (api_config already set above)
         result = compress_messages(messages, api_config, db=db)
         messages = result["messages"]
 
@@ -723,7 +758,7 @@ def generate_prompt_with_ai_stream(
             )
 
         # Detect API format and build endpoints
-        endpoint, api_format = detect_api_format(account.base_url)
+        endpoint, api_format = detect_api_format(api_config["base_url"])
         if not endpoint:
             yield f"data: {json.dumps({'type': 'error', 'content': 'Invalid API configuration'})}\n\n"
             return
@@ -731,12 +766,12 @@ def generate_prompt_with_ai_stream(
         if api_format == 'anthropic':
             endpoints = [endpoint]
         else:
-            endpoints = build_chat_completion_endpoints(account.base_url, account.model)
+            endpoints = build_chat_completion_endpoints(api_config["base_url"], api_config["model"])
             if not endpoints:
                 yield f"data: {json.dumps({'type': 'error', 'content': 'Invalid API configuration'})}\n\n"
                 return
         # Use unified headers builder (see build_llm_headers in ai_decision_service)
-        headers = build_llm_headers(api_format, account.api_key)
+        headers = build_llm_headers(api_format, api_config["api_key"])
 
         # Tool calling loop
         max_rounds = 10
@@ -768,7 +803,7 @@ def generate_prompt_with_ai_stream(
                 sys_prompt, anthropic_messages = _convert_messages_to_anthropic(messages)
                 tools_for_round = PROMPT_TOOLS_ANTHROPIC if not is_last else None
                 payload = build_llm_payload(
-                    model=account.model,
+                    model=api_config["model"],
                     messages=[{"role": "system", "content": sys_prompt}] + anthropic_messages,
                     api_format=api_format,
                     tools=tools_for_round,
@@ -776,7 +811,7 @@ def generate_prompt_with_ai_stream(
             else:
                 tools_for_round = PROMPT_TOOLS if not is_last else None
                 payload = build_llm_payload(
-                    model=account.model,
+                    model=api_config["model"],
                     messages=messages,
                     api_format=api_format,
                     tools=tools_for_round,
@@ -917,7 +952,8 @@ def generate_prompt_with_ai_stream(
                 content = _extract_text_from_message(message.get("content", ""))
                 tool_calls = message.get("tool_calls", [])
                 # DeepSeek Reasoner returns reasoning_content which MUST be included in next request
-                reasoning_content = message.get("reasoning_content", "")
+                # Unified fallback: also handles Qwen thinking field via extract_reasoning()
+                reasoning_content = message.get("reasoning_content", "") or extract_reasoning(message)
 
                 if tool_calls:
                     # Process tool calls - MUST include reasoning_content for DeepSeek Reasoner

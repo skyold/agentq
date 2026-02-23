@@ -21,7 +21,7 @@ from database.models import (
     AiProgramConversation, AiProgramMessage, TradingProgram, Account,
     BacktestResult, BacktestTriggerLog, AccountProgramBinding
 )
-from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers
+from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning
 from services.system_logger import system_logger
 from services.ai_shared_tools import (
     SHARED_SIGNAL_TOOLS,
@@ -1817,33 +1817,14 @@ def _test_run_code(db: Session, code: str, symbol: str) -> str:
         }, indent=2)
 
 
-def _extract_reasoning(message: Dict[str, Any], model: str) -> Optional[str]:
-    """Extract reasoning/thinking content from AI response."""
-    # DeepSeek format
-    if message.get("reasoning_content"):
-        return message["reasoning_content"]
-
-    # Claude format (thinking blocks)
-    content = message.get("content", [])
-    if isinstance(content, list):
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "thinking":
-                return block.get("thinking", "")
-
-    # Qwen format
-    if message.get("thinking"):
-        return message["thinking"]
-
-    return None
-
-
 def generate_program_with_ai_stream(
     db: Session,
-    account_id: int,
-    user_message: str,
+    account_id: Optional[int] = None,
+    user_message: str = "",
     conversation_id: Optional[int] = None,
     program_id: Optional[int] = None,
-    user_id: int = 1
+    user_id: int = 1,
+    llm_config: Optional[Dict[str, Any]] = None
 ) -> Generator[str, None, None]:
     """
     Generate program code using AI with SSE streaming.
@@ -1858,15 +1839,33 @@ def generate_program_with_ai_stream(
                 f"conversation_id={conversation_id}, program_id={program_id}")
 
     try:
-        # Get AI account
-        account = db.query(Account).filter(
-            Account.id == account_id,
-            Account.account_type == "AI"
-        ).first()
+        # Get LLM config: either from llm_config param or from account_id
+        if llm_config:
+            # Use provided llm_config (e.g., from Hyper AI sub-agent call)
+            api_config = {
+                "base_url": llm_config.get("base_url"),
+                "api_key": llm_config.get("api_key"),
+                "model": llm_config.get("model"),
+                "api_format": llm_config.get("api_format", "openai")
+            }
+            account = None
+        else:
+            # Original logic: get from AI account
+            account = db.query(Account).filter(
+                Account.id == account_id,
+                Account.account_type == "AI"
+            ).first()
 
-        if not account:
-            yield f"data: {json.dumps({'type': 'error', 'content': 'AI account not found'})}\n\n"
-            return
+            if not account:
+                yield f"data: {json.dumps({'type': 'error', 'content': 'AI account not found'})}\n\n"
+                return
+
+            api_config = {
+                "base_url": account.base_url,
+                "api_key": account.api_key,
+                "model": account.model,
+                "api_format": detect_api_format(account.base_url)[1] or "openai"
+            }
 
         # Get or create conversation
         conversation = None
@@ -1929,30 +1928,40 @@ You are creating a new program. Start fresh and design the strategy based on use
 """
 
         # Build message history with compression support
-        from services.ai_context_compression_service import compress_messages, update_compression_points
+        from services.ai_context_compression_service import (
+            compress_messages, update_compression_points,
+            restore_tool_calls_to_messages,
+            get_last_compression_point, filter_messages_by_compression,
+        )
 
         messages = [{"role": "system", "content": system_prompt}]
 
-        # Get more messages, compression will handle limits
+        # Check compression points - inject summary for compressed messages
+        cp = get_last_compression_point(conversation)
+        if cp and cp.get("summary"):
+            messages.append({
+                "role": "system",
+                "content": f"[Previous conversation summary]\n{cp['summary']}"
+            })
+
+        # Load history, filter by compression point
         history = db.query(AiProgramMessage).filter(
             AiProgramMessage.conversation_id == conversation.id,
             AiProgramMessage.id != user_msg.id
         ).order_by(AiProgramMessage.created_at).limit(100).all()
 
-        last_message_id = None
-        for msg in history:
-            messages.append({"role": msg.role, "content": msg.content})
-            last_message_id = msg.id
+        history = filter_messages_by_compression(history, cp)
+
+        last_message_id = history[-1].id if history else None
+
+        # Restore tool_calls into proper LLM message format
+        history_dicts = [{"role": m.role, "content": m.content, "tool_calls_log": m.tool_calls_log} for m in history]
+        restored = restore_tool_calls_to_messages(history_dicts, api_config.get("api_format", "openai"))
+        messages.extend(restored)
 
         messages.append({"role": "user", "content": user_message})
 
-        # Apply compression if needed
-        api_config = {
-            "base_url": account.base_url,
-            "api_key": account.api_key,
-            "model": account.model,
-            "api_format": detect_api_format(account.base_url)[1] or "openai"
-        }
+        # Apply compression if needed (api_config already set above)
         result = compress_messages(messages, api_config, db=db)
         messages = result["messages"]
 
@@ -1964,7 +1973,7 @@ You are creating a new program. Start fresh and design the strategy based on use
             )
 
         # Detect API format and build endpoints
-        endpoint, api_format = detect_api_format(account.base_url)
+        endpoint, api_format = detect_api_format(api_config["base_url"])
         if not endpoint:
             yield f"data: {json.dumps({'type': 'error', 'content': 'Invalid API configuration'})}\n\n"
             return
@@ -1973,12 +1982,12 @@ You are creating a new program. Start fresh and design the strategy based on use
         if api_format == 'anthropic':
             endpoints = [endpoint]
         else:
-            endpoints = build_chat_completion_endpoints(account.base_url, account.model)
+            endpoints = build_chat_completion_endpoints(api_config["base_url"], api_config["model"])
             if not endpoints:
                 yield f"data: {json.dumps({'type': 'error', 'content': 'Invalid API configuration'})}\n\n"
                 return
         # Use unified headers builder (see build_llm_headers in ai_decision_service)
-        headers = build_llm_headers(api_format, account.api_key)
+        headers = build_llm_headers(api_format, api_config["api_key"])
 
         # Tool calling loop
         max_rounds = 15
@@ -2012,7 +2021,7 @@ You are creating a new program. Start fresh and design the strategy based on use
                 system_prompt, anthropic_messages = _convert_messages_to_anthropic(messages)
                 tools_for_round = PROGRAM_TOOLS_ANTHROPIC if not is_last else None
                 payload = build_llm_payload(
-                    model=account.model,
+                    model=api_config["model"],
                     messages=[{"role": "system", "content": system_prompt}] + anthropic_messages,
                     api_format=api_format,
                     tools=tools_for_round,
@@ -2020,7 +2029,7 @@ You are creating a new program. Start fresh and design the strategy based on use
             else:
                 tools_for_round = PROGRAM_TOOLS if not is_last else None
                 payload = build_llm_payload(
-                    model=account.model,
+                    model=api_config["model"],
                     messages=messages,
                     api_format=api_format,
                     tools=tools_for_round,
@@ -2116,8 +2125,7 @@ You are creating a new program. Start fresh and design the strategy based on use
                     logger.error(f"[AI Program {request_id}] API failed at round {tool_round}: {error_detail}")
 
                     if tool_calls_log:
-                        analysis_markdown = _format_tool_calls_log(tool_calls_log, reasoning_snapshot)
-                        assistant_msg.content = analysis_markdown + f"\n\n**[Interrupted at round {tool_round}]** {error_detail}"
+                        assistant_msg.content = f"**[Interrupted at round {tool_round}]** {error_detail}"
                         assistant_msg.tool_calls_log = json.dumps(tool_calls_log)
                         assistant_msg.reasoning_snapshot = reasoning_snapshot if reasoning_snapshot else None
                         assistant_msg.is_complete = False
@@ -2144,8 +2152,7 @@ You are creating a new program. Start fresh and design the strategy based on use
                     logger.error(f"[AI Program {request_id}] API failed at round {tool_round}: {error_detail}")
 
                     if tool_calls_log:
-                        analysis_markdown = _format_tool_calls_log(tool_calls_log, reasoning_snapshot)
-                        assistant_msg.content = analysis_markdown + f"\n\n**[Interrupted at round {tool_round}]** {error_detail}"
+                        assistant_msg.content = f"**[Interrupted at round {tool_round}]** {error_detail}"
                         assistant_msg.tool_calls_log = json.dumps(tool_calls_log)
                         assistant_msg.reasoning_snapshot = reasoning_snapshot if reasoning_snapshot else None
                         assistant_msg.is_complete = False
@@ -2237,8 +2244,8 @@ You are creating a new program. Start fresh and design the strategy based on use
                     reasoning_snapshot += f"\n[Round {tool_round}]\n{reasoning_content}"
                     yield f"data: {json.dumps({'type': 'reasoning', 'content': reasoning_content[:500]})}\n\n"
                 else:
-                    # Fallback for other models
-                    reasoning = _extract_reasoning(message, account.model)
+                    # Fallback: unified extraction for other models (Qwen thinking, etc.)
+                    reasoning = extract_reasoning(message)
                     if reasoning:
                         reasoning_snapshot += f"\n[Round {tool_round}]\n{reasoning}"
                         yield f"data: {json.dumps({'type': 'reasoning', 'content': reasoning[:500]})}\n\n"
@@ -2295,8 +2302,7 @@ You are creating a new program. Start fresh and design the strategy based on use
 
             # Save progress after each round (for retry support)
             if tool_calls_log:
-                analysis_markdown = _format_tool_calls_log(tool_calls_log, reasoning_snapshot)
-                assistant_msg.content = analysis_markdown
+                assistant_msg.content = "Processing..."
                 assistant_msg.tool_calls_log = json.dumps(tool_calls_log)
                 assistant_msg.reasoning_snapshot = reasoning_snapshot if reasoning_snapshot else None
                 db.commit()
@@ -2311,19 +2317,15 @@ You are creating a new program. Start fresh and design the strategy based on use
             if not final_content:
                 final_content = "Processing completed."
 
-        # Format tool calls log as Markdown for storage (same as AI Signal)
-        analysis_markdown = _format_tool_calls_log(tool_calls_log, reasoning_snapshot)
-        full_content_for_storage = analysis_markdown + final_content if analysis_markdown else final_content
-
-        # Update assistant message (created at loop start) and mark as complete
-        assistant_msg.content = full_content_for_storage
+        # Store content without analysis markdown (frontend renders from tool_calls_log/reasoning_snapshot)
+        assistant_msg.content = final_content
         assistant_msg.code_suggestion = code_suggestion
         assistant_msg.reasoning_snapshot = reasoning_snapshot if reasoning_snapshot else None
         assistant_msg.tool_calls_log = json.dumps(tool_calls_log) if tool_calls_log else None
         assistant_msg.is_complete = True
         db.commit()
 
-        yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': full_content_for_storage, 'conversation_id': conversation.id})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': final_content, 'conversation_id': conversation.id})}\n\n"
 
     except Exception as e:
         logger.error(f"[AI Program {request_id}] Error: {e}")
