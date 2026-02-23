@@ -24,6 +24,8 @@ from services.ai_decision_service import (
     build_llm_payload,
     build_llm_headers,
     extract_reasoning,
+    convert_tools_to_anthropic,
+    convert_messages_to_anthropic,
 )
 from services.ai_shared_tools import (
     SHARED_SIGNAL_TOOLS,
@@ -188,84 +190,8 @@ PROMPT_TOOLS = [
 ] + PROMPT_CONTEXT_TOOLS + SHARED_SIGNAL_TOOLS  # Add context tools and shared signal pool tools
 
 
-def _convert_tools_to_anthropic(openai_tools: List[Dict]) -> List[Dict]:
-    """Convert OpenAI format tools to Anthropic format."""
-    anthropic_tools = []
-    for tool in openai_tools:
-        if tool.get("type") == "function":
-            func = tool["function"]
-            anthropic_tools.append({
-                "name": func["name"],
-                "description": func.get("description", ""),
-                "input_schema": func.get("parameters", {"type": "object", "properties": {}})
-            })
-    return anthropic_tools
-
-
-def _convert_messages_to_anthropic(openai_messages: List[Dict]) -> tuple:
-    """Convert OpenAI format messages to Anthropic format.
-
-    Returns: (system_prompt, anthropic_messages)
-    """
-    system_prompt = ""
-    anthropic_messages = []
-    pending_tool_results = []
-
-    def flush_tool_results():
-        nonlocal pending_tool_results
-        if pending_tool_results:
-            anthropic_messages.append({
-                "role": "user",
-                "content": pending_tool_results
-            })
-            pending_tool_results = []
-
-    def clean_tool_use_blocks(blocks):
-        if not isinstance(blocks, list):
-            return blocks
-        cleaned = []
-        for block in blocks:
-            if isinstance(block, dict):
-                block_copy = block.copy()
-                if block_copy.get("type") == "tool_use" and block_copy.get("input") == "":
-                    block_copy["input"] = {}
-                cleaned.append(block_copy)
-            else:
-                cleaned.append(block)
-        return cleaned
-
-    for msg in openai_messages:
-        role = msg.get("role")
-        content = msg.get("content", "")
-
-        if role == "system":
-            system_prompt = content
-        elif role == "user":
-            flush_tool_results()
-            anthropic_messages.append({"role": "user", "content": content})
-        elif role == "assistant":
-            flush_tool_results()
-            if "tool_use_blocks" in msg:
-                cleaned_blocks = clean_tool_use_blocks(msg["tool_use_blocks"])
-                anthropic_messages.append({
-                    "role": "assistant",
-                    "content": cleaned_blocks
-                })
-            else:
-                anthropic_messages.append({"role": "assistant", "content": content})
-        elif role == "tool":
-            pending_tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": msg.get("tool_call_id", ""),
-                "content": content
-            })
-
-    flush_tool_results()
-    return system_prompt, anthropic_messages
-
-
 # Pre-convert tools for Anthropic format
-PROMPT_TOOLS_ANTHROPIC = _convert_tools_to_anthropic(PROMPT_TOOLS)
+PROMPT_TOOLS_ANTHROPIC = convert_tools_to_anthropic(PROMPT_TOOLS)
 
 
 # ============================================================================
@@ -800,7 +726,7 @@ def generate_prompt_with_ai_stream(
 
             # Use unified payload builder (see build_llm_payload in ai_decision_service)
             if api_format == 'anthropic':
-                sys_prompt, anthropic_messages = _convert_messages_to_anthropic(messages)
+                sys_prompt, anthropic_messages = convert_messages_to_anthropic(messages)
                 tools_for_round = PROMPT_TOOLS_ANTHROPIC if not is_last else None
                 payload = build_llm_payload(
                     model=api_config["model"],
@@ -894,12 +820,21 @@ def generate_prompt_with_ai_stream(
                 content_blocks = resp_json.get("content", [])
                 tool_uses = []
                 content = ""
+                reasoning_content = ""
 
                 for block in content_blocks:
                     if block.get("type") == "text":
                         content += block.get("text", "")
                     elif block.get("type") == "tool_use":
                         tool_uses.append(block)
+                    elif block.get("type") == "thinking":
+                        t = block.get("thinking", "")
+                        if t:
+                            reasoning_content += t
+
+                if reasoning_content:
+                    reasoning_snapshot += f"\n[Round {tool_round}]\n{reasoning_content}"
+                    yield f"data: {json.dumps({'type': 'reasoning', 'content': reasoning_content[:500]})}\n\n"
 
                 if tool_uses:
                     # Process tool calls
@@ -1022,7 +957,7 @@ def generate_prompt_with_ai_stream(
 
         # Send final content and done event
         yield f"data: {json.dumps({'type': 'content', 'content': final_content})}\n\n"
-        yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation.id, 'message_id': assistant_msg.id, 'prompt_result': prompt_result})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation.id, 'message_id': assistant_msg.id, 'prompt_result': prompt_result, 'tool_calls_log': tool_calls_log if tool_calls_log else None, 'reasoning_snapshot': reasoning_snapshot if reasoning_snapshot else None, 'compression_points': json.loads(conversation.compression_points) if conversation.compression_points else None})}\n\n"
 
         total_elapsed = time.time() - start_time
         logger.info(f"[AI Prompt Gen {request_id}] Completed in {total_elapsed:.2f}s")

@@ -16,7 +16,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from database.models import AiSignalConversation, AiSignalMessage, Account
-from services.ai_decision_service import build_chat_completion_endpoints, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning
+from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning, convert_tools_to_anthropic, convert_messages_to_anthropic
 from services.signal_backtest_service import signal_backtest_service, TIMEFRAME_MS
 from services.system_logger import system_logger
 
@@ -183,6 +183,7 @@ Use this format when you tested combinations with `predict_signal_combination`:
 """
 
 # Tools schema for Function Calling (optimized: 3 tools for 3-round workflow)
+
 SIGNAL_TOOLS = [
     {
         "type": "function",
@@ -334,7 +335,7 @@ def generate_signal_with_ai(
             "base_url": account.base_url,
             "api_key": account.api_key,
             "model": account.model,
-            "api_format": "openai"
+            "api_format": detect_api_format(account.base_url)[1] or "openai"
         }
         comp_result = compress_messages(messages, api_config, db=db)
         messages = comp_result["messages"]
@@ -349,12 +350,17 @@ def generate_signal_with_ai(
         logger.info(f"[AI Signal Gen {request_id}] Built message context: {len(messages)} messages total")
 
         # Call LLM API with Function Calling support
-        endpoints = build_chat_completion_endpoints(account.base_url, account.model)
+        api_format = api_config["api_format"]
+        endpoint, _ = detect_api_format(account.base_url)
+        if api_format == 'anthropic':
+            endpoints = [endpoint] if endpoint else []
+        else:
+            endpoints = build_chat_completion_endpoints(account.base_url, account.model)
         if not endpoints:
             return {"success": False, "error": "Invalid base_url configuration"}
 
         # Use unified headers builder (see build_llm_headers in ai_decision_service)
-        headers = build_llm_headers("openai", account.api_key)
+        headers = build_llm_headers(api_format, account.api_key)
 
         # Function Calling loop (max 30 rounds, last round forces no tools)
         max_tool_rounds = 30
@@ -374,13 +380,23 @@ def generate_signal_with_ai(
                 })
 
             # Use unified payload builder (see build_llm_payload in ai_decision_service)
-            request_payload = build_llm_payload(
-                model=account.model,
-                messages=messages,
-                api_format="openai",
-                tools=SIGNAL_TOOLS if not is_last_round else None,
-                tool_choice="auto" if not is_last_round else None,
-            )
+            if api_format == 'anthropic':
+                sys_prompt, anthropic_messages = convert_messages_to_anthropic(messages)
+                tools_for_round = convert_tools_to_anthropic(SIGNAL_TOOLS) if not is_last_round else None
+                request_payload = build_llm_payload(
+                    model=account.model,
+                    messages=[{"role": "system", "content": sys_prompt}] + anthropic_messages,
+                    api_format=api_format,
+                    tools=tools_for_round,
+                )
+            else:
+                request_payload = build_llm_payload(
+                    model=account.model,
+                    messages=messages,
+                    api_format=api_format,
+                    tools=SIGNAL_TOOLS if not is_last_round else None,
+                    tool_choice="auto" if not is_last_round else None,
+                )
 
             response = None
             last_error = None
@@ -424,53 +440,83 @@ def generate_signal_with_ai(
                 logger.error(f"[AI Signal Gen {request_id}] API failed: {error_detail}")
                 return {"success": False, "error": f"All endpoints failed: {error_detail}"}
 
-            # Parse response
+            # Parse response based on API format
             try:
                 response_json = response.json()
-                message = response_json["choices"][0]["message"]
+                if api_format == 'anthropic':
+                    content_blocks = response_json.get("content", [])
+                    tool_uses = []
+                    content = ""
+                    reasoning_content = ""
+                    for block in content_blocks:
+                        if block.get("type") == "text":
+                            content += block.get("text", "")
+                        elif block.get("type") == "tool_use":
+                            tool_uses.append(block)
+                        elif block.get("type") == "thinking":
+                            t = block.get("thinking", "")
+                            if t:
+                                reasoning_content += t
+                    tool_calls = None
+                    api_tool_calls = tool_uses if tool_uses else None
+                else:
+                    message = response_json["choices"][0]["message"]
+                    tool_calls = message.get("tool_calls", [])
+                    reasoning_content = message.get("reasoning_content", "") or extract_reasoning(message)
+                    content = message.get("content", "")
+                    api_tool_calls = tool_calls if tool_calls else None
             except Exception as e:
                 logger.error(f"[AI Signal Gen {request_id}] Failed to parse response: {e}")
                 return {"success": False, "error": f"Failed to parse AI response: {str(e)}"}
 
-            # Check for tool calls
-            tool_calls = message.get("tool_calls", [])
-            reasoning_content = message.get("reasoning_content", "") or extract_reasoning(message)
-            content = message.get("content", "")
-
             # Log for debugging
-            logger.info(f"[AI Signal Gen {request_id}] Response: tool_calls={len(tool_calls) if tool_calls else 0}, "
+            logger.info(f"[AI Signal Gen {request_id}] Response: tool_calls={len(api_tool_calls) if api_tool_calls else 0}, "
                        f"has_reasoning={bool(reasoning_content)}, has_content={bool(content)}")
 
-            if tool_calls:
-                # Add assistant message with tool calls AND reasoning_content to history
-                # DeepSeek Reasoner requires reasoning_content to be passed back
-                assistant_msg_dict = {
-                    "role": "assistant",
-                    "content": content or "",
-                    "tool_calls": tool_calls
-                }
-                # Include reasoning_content if present (required for DeepSeek Reasoner)
-                if reasoning_content:
-                    assistant_msg_dict["reasoning_content"] = reasoning_content
-                messages.append(assistant_msg_dict)
-
-                # Execute each tool and add results
-                for tool_call in tool_calls:
-                    func_name = tool_call["function"]["name"]
-                    try:
-                        func_args = json.loads(tool_call["function"]["arguments"])
-                    except json.JSONDecodeError:
-                        func_args = {}
-
-                    logger.info(f"[AI Signal Gen {request_id}] Executing tool: {func_name}({func_args})")
-                    tool_result = _execute_tool(db, func_name, func_args)
-                    logger.info(f"[AI Signal Gen {request_id}] Tool result: {tool_result[:200]}...")
-
+            if api_tool_calls:
+                if api_format == 'anthropic':
+                    # Anthropic format: tool_use blocks
                     messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": tool_result
+                        "role": "assistant",
+                        "content": content or "",
+                        "tool_use_blocks": response_json.get("content", [])
                     })
+                    for tool_use in api_tool_calls:
+                        func_name = tool_use.get("name", "")
+                        tool_id = tool_use.get("id", "")
+                        func_args = tool_use.get("input", {})
+                        logger.info(f"[AI Signal Gen {request_id}] Executing tool: {func_name}({func_args})")
+                        tool_result = _execute_tool(db, func_name, func_args)
+                        logger.info(f"[AI Signal Gen {request_id}] Tool result: {tool_result[:200]}...")
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "content": tool_result
+                        })
+                else:
+                    # OpenAI format: tool_calls array
+                    assistant_msg_dict = {
+                        "role": "assistant",
+                        "content": content or "",
+                        "tool_calls": api_tool_calls
+                    }
+                    if reasoning_content:
+                        assistant_msg_dict["reasoning_content"] = reasoning_content
+                    messages.append(assistant_msg_dict)
+                    for tool_call in api_tool_calls:
+                        func_name = tool_call["function"]["name"]
+                        try:
+                            func_args = json.loads(tool_call["function"]["arguments"])
+                        except json.JSONDecodeError:
+                            func_args = {}
+                        logger.info(f"[AI Signal Gen {request_id}] Executing tool: {func_name}({func_args})")
+                        tool_result = _execute_tool(db, func_name, func_args)
+                        logger.info(f"[AI Signal Gen {request_id}] Tool result: {tool_result[:200]}...")
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": tool_result
+                        })
                 # Continue loop for next round
             else:
                 # No tool calls - AI returned final response
@@ -1406,7 +1452,7 @@ def generate_signal_with_ai_stream(
                 "base_url": account.base_url,
                 "api_key": account.api_key,
                 "model": account.model,
-                "api_format": "openai"
+                "api_format": detect_api_format(account.base_url)[1] or "openai"
             }
             model_name = account.model
 
@@ -1486,13 +1532,18 @@ def generate_signal_with_ai_stream(
             )
 
         # Build endpoints and headers
-        endpoints = build_chat_completion_endpoints(api_config["base_url"], api_config["model"])
+        api_format = api_config.get("api_format", "openai")
+        if api_format == 'anthropic':
+            ep, _ = detect_api_format(api_config["base_url"])
+            endpoints = [ep] if ep else []
+        else:
+            endpoints = build_chat_completion_endpoints(api_config["base_url"], api_config["model"])
         if not endpoints:
             yield _sse_event("error", {"message": "Invalid base_url configuration"})
             return
 
         # Use unified headers builder (see build_llm_headers in ai_decision_service)
-        headers = build_llm_headers(api_config.get("api_format", "openai"), api_config["api_key"])
+        headers = build_llm_headers(api_format, api_config["api_key"])
 
         yield _sse_event("status", {"message": "Analyzing your request..."})
 
@@ -1520,13 +1571,23 @@ def generate_signal_with_ai_stream(
                 })
 
             # Use unified payload builder (see build_llm_payload in ai_decision_service)
-            request_payload = build_llm_payload(
-                model=api_config["model"],
-                messages=messages,
-                api_format="openai",
-                tools=SIGNAL_TOOLS if not is_last_round else None,
-                tool_choice="auto" if not is_last_round else None,
-            )
+            if api_format == 'anthropic':
+                sys_prompt, anthropic_messages = convert_messages_to_anthropic(messages)
+                tools_for_round = convert_tools_to_anthropic(SIGNAL_TOOLS) if not is_last_round else None
+                request_payload = build_llm_payload(
+                    model=api_config["model"],
+                    messages=[{"role": "system", "content": sys_prompt}] + anthropic_messages,
+                    api_format=api_format,
+                    tools=tools_for_round,
+                )
+            else:
+                request_payload = build_llm_payload(
+                    model=api_config["model"],
+                    messages=messages,
+                    api_format=api_format,
+                    tools=SIGNAL_TOOLS if not is_last_round else None,
+                    tool_choice="auto" if not is_last_round else None,
+                )
 
             # Call API
             response = None
@@ -1590,73 +1651,83 @@ def generate_signal_with_ai_stream(
                     yield _sse_event("error", {"message": f"API request failed: {error_detail}"})
                 return
 
-            # Parse response
+            # Parse response based on API format
             try:
                 response_json = response.json()
-                message = response_json["choices"][0]["message"]
+                if api_format == 'anthropic':
+                    content_blocks = response_json.get("content", [])
+                    tool_uses = []
+                    content = ""
+                    reasoning_content = ""
+                    for block in content_blocks:
+                        if block.get("type") == "text":
+                            content += block.get("text", "")
+                        elif block.get("type") == "tool_use":
+                            tool_uses.append(block)
+                        elif block.get("type") == "thinking":
+                            t = block.get("thinking", "")
+                            if t:
+                                reasoning_content += t
+                    api_tool_calls = tool_uses if tool_uses else None
+                else:
+                    message = response_json["choices"][0]["message"]
+                    tool_calls = message.get("tool_calls", [])
+                    reasoning_content = message.get("reasoning_content", "") or extract_reasoning(message)
+                    content = message.get("content", "")
+                    api_tool_calls = tool_calls if tool_calls else None
             except Exception as e:
                 logger.error(f"[AI Signal Gen Stream {request_id}] Failed to parse response: {e}")
                 system_logger.add_log("ERROR", "ai_signal_gen", f"Failed to parse response", {"error": str(e), "request_id": request_id})
                 yield _sse_event("error", {"message": f"Failed to parse response: {e}"})
                 return
 
-            tool_calls = message.get("tool_calls", [])
-            reasoning_content = message.get("reasoning_content", "") or extract_reasoning(message)
-            content = message.get("content", "")
-
             # Send reasoning content if present
             if reasoning_content:
                 yield _sse_event("reasoning", {"content": reasoning_content})
-                # Collect reasoning for storage
                 reasoning_snapshot_parts.append(reasoning_content)
 
             # Send content if present
             if content:
                 yield _sse_event("content", {"content": content})
 
-            if tool_calls:
-                # Process tool calls
-                assistant_msg_dict = {
-                    "role": "assistant",
-                    "content": content or "",
-                    "tool_calls": tool_calls
-                }
-                if reasoning_content:
-                    assistant_msg_dict["reasoning_content"] = reasoning_content
-                messages.append(assistant_msg_dict)
-
-                for tool_call in tool_calls:
-                    func_name = tool_call["function"]["name"]
-                    try:
-                        func_args = json.loads(tool_call["function"]["arguments"])
-                    except json.JSONDecodeError:
-                        func_args = {}
-
-                    yield _sse_event("tool_call", {
-                        "name": func_name,
-                        "arguments": func_args
-                    })
-
-                    tool_result = _execute_tool(db, func_name, func_args)
-                    tool_result_parsed = json.loads(tool_result)
-
-                    yield _sse_event("tool_result", {
-                        "name": func_name,
-                        "result": tool_result_parsed
-                    })
-
-                    # Log tool call for storage (unified format: {tool, args, result:string})
-                    tool_calls_log.append({
-                        "tool": func_name,
-                        "args": func_args,
-                        "result": tool_result
-                    })
-
+            if api_tool_calls:
+                if api_format == 'anthropic':
                     messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": tool_result
+                        "role": "assistant",
+                        "content": content or "",
+                        "tool_use_blocks": response_json.get("content", [])
                     })
+                    for tool_use in api_tool_calls:
+                        func_name = tool_use.get("name", "")
+                        tool_id = tool_use.get("id", "")
+                        func_args = tool_use.get("input", {})
+                        yield _sse_event("tool_call", {"name": func_name, "arguments": func_args})
+                        tool_result = _execute_tool(db, func_name, func_args)
+                        tool_result_parsed = json.loads(tool_result)
+                        yield _sse_event("tool_result", {"name": func_name, "result": tool_result_parsed})
+                        tool_calls_log.append({"tool": func_name, "args": func_args, "result": tool_result})
+                        messages.append({"role": "tool", "tool_call_id": tool_id, "content": tool_result})
+                else:
+                    assistant_msg_dict = {
+                        "role": "assistant",
+                        "content": content or "",
+                        "tool_calls": api_tool_calls
+                    }
+                    if reasoning_content:
+                        assistant_msg_dict["reasoning_content"] = reasoning_content
+                    messages.append(assistant_msg_dict)
+                    for tool_call in api_tool_calls:
+                        func_name = tool_call["function"]["name"]
+                        try:
+                            func_args = json.loads(tool_call["function"]["arguments"])
+                        except json.JSONDecodeError:
+                            func_args = {}
+                        yield _sse_event("tool_call", {"name": func_name, "arguments": func_args})
+                        tool_result = _execute_tool(db, func_name, func_args)
+                        tool_result_parsed = json.loads(tool_result)
+                        yield _sse_event("tool_result", {"name": func_name, "result": tool_result_parsed})
+                        tool_calls_log.append({"tool": func_name, "args": func_args, "result": tool_result})
+                        messages.append({"role": "tool", "tool_call_id": tool_call["id"], "content": tool_result})
             else:
                 # No tool calls - final response
                 # Don't add reasoning here - tool_calls_log already has it via <details> format
@@ -1701,7 +1772,10 @@ def generate_signal_with_ai_stream(
             "message_id": assistant_msg.id,
             "content": assistant_content,
             "signal_configs": signal_configs,
-            "elapsed": round(time.time() - start_time, 2)
+            "elapsed": round(time.time() - start_time, 2),
+            "tool_calls_log": tool_calls_log if tool_calls_log else None,
+            "reasoning_snapshot": reasoning_snapshot if reasoning_snapshot else None,
+            "compression_points": json.loads(conversation.compression_points) if conversation.compression_points else None,
         })
 
     except Exception as e:

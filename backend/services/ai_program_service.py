@@ -21,7 +21,7 @@ from database.models import (
     AiProgramConversation, AiProgramMessage, TradingProgram, Account,
     BacktestResult, BacktestTriggerLog, AccountProgramBinding
 )
-from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning
+from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning, convert_tools_to_anthropic, convert_messages_to_anthropic
 from services.system_logger import system_logger
 from services.ai_shared_tools import (
     SHARED_SIGNAL_TOOLS,
@@ -823,92 +823,6 @@ BACKTEST_ANALYSIS_TOOLS = [
 PROGRAM_TOOLS = PROGRAM_TOOLS + BACKTEST_ANALYSIS_TOOLS + SHARED_SIGNAL_TOOLS
 
 
-def _convert_tools_to_anthropic(openai_tools: List[Dict]) -> List[Dict]:
-    """Convert OpenAI format tools to Anthropic format."""
-    anthropic_tools = []
-    for tool in openai_tools:
-        if tool.get("type") == "function":
-            func = tool["function"]
-            anthropic_tools.append({
-                "name": func["name"],
-                "description": func.get("description", ""),
-                "input_schema": func.get("parameters", {"type": "object", "properties": {}})
-            })
-    return anthropic_tools
-
-
-def _convert_messages_to_anthropic(openai_messages: List[Dict]) -> tuple:
-    """Convert OpenAI format messages to Anthropic format.
-
-    Returns: (system_prompt, anthropic_messages)
-    Anthropic requires system prompt to be separate from messages.
-    Also, multiple consecutive tool results must be merged into one user message.
-    """
-    system_prompt = ""
-    anthropic_messages = []
-    pending_tool_results = []  # Collect consecutive tool results
-
-    def flush_tool_results():
-        """Flush pending tool results as a single user message."""
-        nonlocal pending_tool_results
-        if pending_tool_results:
-            anthropic_messages.append({
-                "role": "user",
-                "content": pending_tool_results
-            })
-            pending_tool_results = []
-
-    def clean_tool_use_blocks(blocks):
-        """Clean tool_use blocks: fix input field format (some proxies return '' instead of {})."""
-        if not isinstance(blocks, list):
-            return blocks
-        cleaned = []
-        for block in blocks:
-            if isinstance(block, dict):
-                block_copy = block.copy()
-                # Fix empty string input to empty object (Anthropic requires object, not string)
-                if block_copy.get("type") == "tool_use" and block_copy.get("input") == "":
-                    block_copy["input"] = {}
-                cleaned.append(block_copy)
-            else:
-                cleaned.append(block)
-        return cleaned
-
-    for msg in openai_messages:
-        role = msg.get("role")
-        content = msg.get("content", "")
-
-        if role == "system":
-            system_prompt = content
-        elif role == "user":
-            flush_tool_results()  # Flush any pending tool results first
-            anthropic_messages.append({"role": "user", "content": content})
-        elif role == "assistant":
-            flush_tool_results()  # Flush any pending tool results first
-            # Check if this message has tool_use (from previous Anthropic response)
-            if "tool_use_blocks" in msg:
-                # Clean the blocks before sending back
-                cleaned_blocks = clean_tool_use_blocks(msg["tool_use_blocks"])
-                anthropic_messages.append({
-                    "role": "assistant",
-                    "content": cleaned_blocks
-                })
-            else:
-                anthropic_messages.append({"role": "assistant", "content": content})
-        elif role == "tool":
-            # Collect tool results - they will be merged into one user message
-            pending_tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": msg.get("tool_call_id", ""),
-                "content": content
-            })
-
-    # Flush any remaining tool results
-    flush_tool_results()
-
-    return system_prompt, anthropic_messages
-
-
 def _call_anthropic_streaming(endpoint: str, payload: dict, headers: dict, timeout: int = 180) -> dict:
     """
     Call Anthropic API with streaming to avoid Cloudflare timeout.
@@ -1018,7 +932,7 @@ def _call_anthropic_streaming(endpoint: str, payload: dict, headers: dict, timeo
 
 
 # Anthropic format tools (pre-converted for efficiency)
-PROGRAM_TOOLS_ANTHROPIC = _convert_tools_to_anthropic(PROGRAM_TOOLS)
+PROGRAM_TOOLS_ANTHROPIC = convert_tools_to_anthropic(PROGRAM_TOOLS)
 
 
 # API Documentation content
@@ -2018,7 +1932,7 @@ You are creating a new program. Start fresh and design the strategy based on use
 
             # Use unified payload builder (see build_llm_payload in ai_decision_service)
             if api_format == 'anthropic':
-                system_prompt, anthropic_messages = _convert_messages_to_anthropic(messages)
+                system_prompt, anthropic_messages = convert_messages_to_anthropic(messages)
                 tools_for_round = PROGRAM_TOOLS_ANTHROPIC if not is_last else None
                 payload = build_llm_payload(
                     model=api_config["model"],
@@ -2172,15 +2086,21 @@ You are creating a new program. Start fresh and design the strategy based on use
                 content_blocks = resp_json.get("content", [])
                 tool_uses = []
                 content = ""
+                reasoning_content = ""
 
                 for block in content_blocks:
                     if block.get("type") == "text":
                         content += block.get("text", "")
                     elif block.get("type") == "tool_use":
                         tool_uses.append(block)
+                    elif block.get("type") == "thinking":
+                        t = block.get("thinking", "")
+                        if t:
+                            reasoning_content += t
 
-                # No reasoning_content in Anthropic format
-                reasoning_content = ""
+                if reasoning_content:
+                    reasoning_snapshot += f"\n[Round {tool_round}]\n{reasoning_content}"
+                    yield f"data: {json.dumps({'type': 'reasoning', 'content': reasoning_content[:500]})}\n\n"
 
                 if tool_uses:
                     # Store the raw content blocks for message history
@@ -2325,7 +2245,7 @@ You are creating a new program. Start fresh and design the strategy based on use
         assistant_msg.is_complete = True
         db.commit()
 
-        yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': final_content, 'conversation_id': conversation.id})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg.id, 'content': final_content, 'conversation_id': conversation.id, 'tool_calls_log': tool_calls_log if tool_calls_log else None, 'reasoning_snapshot': reasoning_snapshot if reasoning_snapshot else None, 'compression_points': json.loads(conversation.compression_points) if conversation.compression_points else None})}\n\n"
 
     except Exception as e:
         logger.error(f"[AI Program {request_id}] Error: {e}")

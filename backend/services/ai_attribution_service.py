@@ -23,7 +23,7 @@ from database.models import (
 )
 from database.snapshot_connection import SnapshotSessionLocal
 from database.snapshot_models import HyperliquidTrade
-from services.ai_decision_service import build_chat_completion_endpoints, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning
+from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning, convert_tools_to_anthropic, convert_messages_to_anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -696,7 +696,7 @@ def generate_attribution_analysis_stream(
                 "base_url": account.base_url,
                 "api_key": account.api_key,
                 "model": account.model,
-                "api_format": "openai"
+                "api_format": detect_api_format(account.base_url)[1] or "openai"
             }
 
         # Get or create conversation
@@ -775,13 +775,18 @@ def generate_attribution_analysis_stream(
             )
 
         # Call LLM with Function Calling
-        endpoints = build_chat_completion_endpoints(api_config["base_url"], api_config["model"])
+        api_format = api_config.get("api_format", "openai")
+        if api_format == 'anthropic':
+            ep, _ = detect_api_format(api_config["base_url"])
+            endpoints = [ep] if ep else []
+        else:
+            endpoints = build_chat_completion_endpoints(api_config["base_url"], api_config["model"])
         if not endpoints:
             yield f"event: error\ndata: {json.dumps({'message': 'Invalid API configuration'})}\n\n"
             return
 
         # Use unified headers builder (see build_llm_headers in ai_decision_service)
-        headers = build_llm_headers(api_config.get("api_format", "openai"), api_config["api_key"])
+        headers = build_llm_headers(api_format, api_config["api_key"])
 
         # Function calling loop
         max_rounds = 15
@@ -803,13 +808,23 @@ def generate_attribution_analysis_stream(
                 })
 
             # Use unified payload builder (see build_llm_payload in ai_decision_service)
-            request_payload = build_llm_payload(
-                model=api_config["model"],
-                messages=messages,
-                api_format="openai",
-                tools=ATTRIBUTION_TOOLS if not is_last else None,
-                tool_choice="auto" if not is_last else None,
-            )
+            if api_format == 'anthropic':
+                sys_prompt, anthropic_messages = convert_messages_to_anthropic(messages)
+                tools_for_round = convert_tools_to_anthropic(ATTRIBUTION_TOOLS) if not is_last else None
+                request_payload = build_llm_payload(
+                    model=api_config["model"],
+                    messages=[{"role": "system", "content": sys_prompt}] + anthropic_messages,
+                    api_format=api_format,
+                    tools=tools_for_round,
+                )
+            else:
+                request_payload = build_llm_payload(
+                    model=api_config["model"],
+                    messages=messages,
+                    api_format=api_format,
+                    tools=ATTRIBUTION_TOOLS if not is_last else None,
+                    tool_choice="auto" if not is_last else None,
+                )
 
             response = None
             last_error = None
@@ -866,46 +881,66 @@ def generate_attribution_analysis_stream(
                 return
 
             resp_json = response.json()
-            message = resp_json["choices"][0]["message"]
-            tool_calls = message.get("tool_calls", [])
-            content = message.get("content", "")
-            reasoning = message.get("reasoning_content", "") or extract_reasoning(message)
+
+            # Parse response based on API format
+            if api_format == 'anthropic':
+                content_blocks = resp_json.get("content", [])
+                tool_uses = []
+                content = ""
+                reasoning = ""
+                for block in content_blocks:
+                    if block.get("type") == "text":
+                        content += block.get("text", "")
+                    elif block.get("type") == "tool_use":
+                        tool_uses.append(block)
+                    elif block.get("type") == "thinking":
+                        t = block.get("thinking", "")
+                        if t:
+                            reasoning += t
+                api_tool_calls = tool_uses if tool_uses else None
+            else:
+                message = resp_json["choices"][0]["message"]
+                tool_calls = message.get("tool_calls", [])
+                content = message.get("content", "")
+                reasoning = message.get("reasoning_content", "") or extract_reasoning(message)
+                api_tool_calls = tool_calls if tool_calls else None
 
             if reasoning:
                 yield f"event: reasoning\ndata: {json.dumps({'content': reasoning[:200]})}\n\n"
-                # Collect full reasoning for storage
                 all_reasoning_parts.append(reasoning)
 
-            if tool_calls:
-                msg_dict = {"role": "assistant", "content": content or "", "tool_calls": tool_calls}
-                if reasoning:
-                    msg_dict["reasoning_content"] = reasoning
-                messages.append(msg_dict)
-
-                for tc in tool_calls:
-                    func_name = tc["function"]["name"]
-                    try:
-                        func_args = json.loads(tc["function"]["arguments"])
-                    except:
-                        func_args = {}
-
-                    yield f"event: tool_call\ndata: {json.dumps({'name': func_name, 'arguments': func_args})}\n\n"
-
-                    result = _execute_tool(db, func_name, func_args)
-                    yield f"event: tool_result\ndata: {json.dumps({'name': func_name, 'result': json.loads(result)})}\n\n"
-
-                    # Collect tool call for storage (unified format: {tool, args, result:string})
-                    tool_calls_log.append({
-                        "tool": func_name,
-                        "args": func_args,
-                        "result": result
-                    })
-
+            if api_tool_calls:
+                if api_format == 'anthropic':
                     messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": result
+                        "role": "assistant",
+                        "content": content or "",
+                        "tool_use_blocks": resp_json.get("content", [])
                     })
+                    for tool_use in api_tool_calls:
+                        func_name = tool_use.get("name", "")
+                        tool_id = tool_use.get("id", "")
+                        func_args = tool_use.get("input", {})
+                        yield f"event: tool_call\ndata: {json.dumps({'name': func_name, 'arguments': func_args})}\n\n"
+                        result = _execute_tool(db, func_name, func_args)
+                        yield f"event: tool_result\ndata: {json.dumps({'name': func_name, 'result': json.loads(result)})}\n\n"
+                        tool_calls_log.append({"tool": func_name, "args": func_args, "result": result})
+                        messages.append({"role": "tool", "tool_call_id": tool_id, "content": result})
+                else:
+                    msg_dict = {"role": "assistant", "content": content or "", "tool_calls": api_tool_calls}
+                    if reasoning:
+                        msg_dict["reasoning_content"] = reasoning
+                    messages.append(msg_dict)
+                    for tc in api_tool_calls:
+                        func_name = tc["function"]["name"]
+                        try:
+                            func_args = json.loads(tc["function"]["arguments"])
+                        except:
+                            func_args = {}
+                        yield f"event: tool_call\ndata: {json.dumps({'name': func_name, 'arguments': func_args})}\n\n"
+                        result = _execute_tool(db, func_name, func_args)
+                        yield f"event: tool_result\ndata: {json.dumps({'name': func_name, 'result': json.loads(result)})}\n\n"
+                        tool_calls_log.append({"tool": func_name, "args": func_args, "result": result})
+                        messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
             else:
                 # Final response - only use content, not reasoning
                 assistant_content = _extract_text_from_message(content) if content else ""
@@ -935,7 +970,7 @@ def generate_attribution_analysis_stream(
 
         # Send final response
         yield f"event: content\ndata: {json.dumps({'content': assistant_content})}\n\n"
-        yield f"event: done\ndata: {json.dumps({'conversation_id': conversation.id, 'message_id': assistant_msg.id, 'content': assistant_content, 'diagnosis_results': diagnosis_results})}\n\n"
+        yield f"event: done\ndata: {json.dumps({'conversation_id': conversation.id, 'message_id': assistant_msg.id, 'content': assistant_content, 'diagnosis_results': diagnosis_results, 'tool_calls_log': json.loads(tool_calls_log_json) if tool_calls_log_json else None, 'reasoning_snapshot': reasoning_snapshot if reasoning_snapshot else None, 'compression_points': json.loads(conversation.compression_points) if conversation.compression_points else None})}\n\n"
 
     except Exception as e:
         logger.error(f"[AI Attribution {request_id}] Error: {e}", exc_info=True)
