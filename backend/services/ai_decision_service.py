@@ -1523,6 +1523,32 @@ def extract_reasoning(message: dict) -> str:
     return ""
 
 
+# Regex to match <thinking>...</thinking> tags (including multiline content)
+_THINKING_TAG_RE = re.compile(r'<thinking>\s*([\s\S]*?)\s*</thinking>', re.IGNORECASE)
+
+
+def strip_thinking_tags(content: str) -> tuple:
+    """Strip <thinking>...</thinking> text tags from content.
+
+    Some OpenAI-compatible proxies embed Claude's extended thinking as
+    <thinking> text tags inside the content field. This extracts the
+    thinking text and returns clean content.
+
+    Returns:
+        (clean_content, extracted_thinking) tuple.
+        extracted_thinking is empty string if no tags found.
+    """
+    if not content or '<thinking>' not in content.lower():
+        return (content, "")
+
+    parts = []
+    for m in _THINKING_TAG_RE.finditer(content):
+        parts.append(m.group(1).strip())
+
+    clean = _THINKING_TAG_RE.sub('', content).strip()
+    return (clean, "\n\n".join(parts))
+
+
 def build_llm_payload(
     model: str,
     messages: list,

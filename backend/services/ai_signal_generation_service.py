@@ -16,7 +16,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from database.models import AiSignalConversation, AiSignalMessage, Account
-from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning, convert_tools_to_anthropic, convert_messages_to_anthropic
+from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning, convert_tools_to_anthropic, convert_messages_to_anthropic, strip_thinking_tags
 from services.signal_backtest_service import signal_backtest_service, TIMEFRAME_MS
 from services.system_logger import system_logger
 
@@ -468,6 +468,11 @@ def generate_signal_with_ai(
             except Exception as e:
                 logger.error(f"[AI Signal Gen {request_id}] Failed to parse response: {e}")
                 return {"success": False, "error": f"Failed to parse AI response: {str(e)}"}
+
+            # Strip <thinking> text tags from content
+            content, tag_thinking = strip_thinking_tags(content)
+            if tag_thinking and not reasoning_content:
+                reasoning_content = tag_thinking
 
             # Log for debugging
             logger.info(f"[AI Signal Gen {request_id}] Response: tool_calls={len(api_tool_calls) if api_tool_calls else 0}, "
@@ -1680,6 +1685,11 @@ def generate_signal_with_ai_stream(
                 system_logger.add_log("ERROR", "ai_signal_gen", f"Failed to parse response", {"error": str(e), "request_id": request_id})
                 yield _sse_event("error", {"message": f"Failed to parse response: {e}"})
                 return
+
+            # Strip <thinking> text tags from content
+            content, tag_thinking = strip_thinking_tags(content)
+            if tag_thinking and not reasoning_content:
+                reasoning_content = tag_thinking
 
             # Send reasoning content if present
             if reasoning_content:

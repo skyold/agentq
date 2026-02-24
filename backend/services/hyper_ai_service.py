@@ -41,6 +41,7 @@ from services.ai_decision_service import (
     is_reasoning_model,
     extract_reasoning,
     convert_tools_to_anthropic,
+    strip_thinking_tags,
 )
 from services.ai_stream_service import (
     get_buffer_manager,
@@ -728,6 +729,11 @@ def stream_chat_response(
                 reasoning_content = message.get("reasoning_content", "") or extract_reasoning(message)
                 content = message.get("content", "")
 
+            # Strip <thinking> text tags from content (some proxies embed them)
+            content, tag_thinking = strip_thinking_tags(content)
+            if tag_thinking and not reasoning_content:
+                reasoning_content = tag_thinking
+
             # Send reasoning content if present
             if reasoning_content:
                 yield format_sse_event("reasoning", {"content": reasoning_content})
@@ -939,7 +945,7 @@ def stream_onboarding_response(
     # Handle greeting request - AI initiates conversation
     is_greeting = user_message == "__GREETING__"
     if is_greeting:
-        user_message = "Please introduce yourself and start the onboarding conversation."
+        user_message = "请用中文介绍你自己并开始引导对话。" if lang == "zh" else "Please introduce yourself and start the onboarding conversation."
     else:
         # Save user message (don't save the greeting trigger)
         save_message(db, conversation_id, "user", user_message)
@@ -1176,6 +1182,11 @@ def _process_onboarding_stream_response(
         # Process full content
         full_content = "".join(content_parts)
         full_reasoning = "".join(reasoning_parts) if reasoning_parts else None
+
+        # Strip <thinking> text tags from content (some proxies embed them)
+        full_content, tag_thinking = strip_thinking_tags(full_content)
+        if tag_thinking:
+            full_reasoning = (full_reasoning + "\n\n" + tag_thinking).strip() if full_reasoning else tag_thinking
 
         # Check for profile data completion
         profile_data = _parse_profile_data(full_content)

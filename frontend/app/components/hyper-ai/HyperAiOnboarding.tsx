@@ -284,28 +284,25 @@ function ChatStep({ onSkip, onComplete }: { onSkip: () => void; onComplete: () =
   const [loading, setLoading] = useState(false)
   const [conversationId, setConversationId] = useState<number | null>(null)
   const [streamingContent, setStreamingContent] = useState('')
-  const [initialized, setInitialized] = useState(false)
   const [lastOffset, setLastOffset] = useState(0)
   const [onboardingComplete, setOnboardingComplete] = useState(false)
   const [showEnterButton, setShowEnterButton] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const initializedRef = useRef(false)
 
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, streamingContent])
 
-  // AI greeting on mount
+  // AI greeting on mount - useRef survives StrictMode remount
   useEffect(() => {
-    if (!initialized) {
-      setInitialized(true)
+    if (!initializedRef.current) {
+      initializedRef.current = true
       sendGreeting()
     }
-  }, [initialized])
-
-  // Get current language for API
-  const currentLang = i18n.language?.startsWith('zh') ? 'zh' : 'en'
+  }, [])
 
   const sendGreeting = async () => {
     setLoading(true)
@@ -313,6 +310,9 @@ function ChatStep({ onSkip, onComplete }: { onSkip: () => void; onComplete: () =
     setLastOffset(0)
 
     try {
+      // Use navigator.language as primary source - i18n.changeLanguage may not have completed yet
+      const lang = navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
+
       const res = await fetch('/api/hyper-ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -320,7 +320,7 @@ function ChatStep({ onSkip, onComplete }: { onSkip: () => void; onComplete: () =
           message: '__GREETING__',
           conversation_id: null,
           mode: 'onboarding',
-          lang: currentLang
+          lang
         })
       })
 
@@ -360,7 +360,7 @@ function ChatStep({ onSkip, onComplete }: { onSkip: () => void; onComplete: () =
           message: text,
           conversation_id: conversationId,
           mode: 'onboarding',
-          lang: currentLang
+          lang: i18n.language?.startsWith('zh') ? 'zh' : 'en'
         })
       })
 
@@ -383,41 +383,34 @@ function ChatStep({ onSkip, onComplete }: { onSkip: () => void; onComplete: () =
 
   const pollStreamResponse = async (taskId: string) => {
     let content = ''
+    let isOnboardingComplete = false
 
-    const pollResult = await pollAiStream(taskId, {
+    await pollAiStream(taskId, {
       interval: 150,
-      maxDuration: 2 * 60 * 1000, // 2 minutes for onboarding
+      maxDuration: 2 * 60 * 1000,
       onChunk: (chunk) => {
         const eventType = chunk.event_type || chunk.data?.type
         if (eventType === 'content' && chunk.data?.text) {
           content += chunk.data.text
           setStreamingContent(content)
         } else if (eventType === 'done') {
-          if (content) {
-            setMessages(prev => [...prev, { role: 'assistant', content }])
-            setStreamingContent('')
-          }
           if (chunk.data?.onboarding_complete) {
-            setOnboardingComplete(true)
-            setTimeout(() => setShowEnterButton(true), 2000)
+            isOnboardingComplete = true
           }
         } else if (eventType === 'error') {
           throw new Error(chunk.data?.message || 'Stream error')
         }
       },
-      onTaskLost: () => {
-        // Onboarding has no conversation reload, just finalize what we have
-        if (content) {
-          setMessages(prev => [...prev, { role: 'assistant', content }])
-          setStreamingContent('')
-        }
-      },
     })
 
-    // If completed/timeout/lost but content wasn't finalized by done event
-    if (pollResult.status !== 'lost' && content) {
+    // Finalize message after polling completes
+    if (content) {
       setMessages(prev => [...prev, { role: 'assistant', content }])
       setStreamingContent('')
+    }
+    if (isOnboardingComplete) {
+      setOnboardingComplete(true)
+      setTimeout(() => setShowEnterButton(true), 2000)
     }
   }
 

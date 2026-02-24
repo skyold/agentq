@@ -26,6 +26,7 @@ from services.ai_decision_service import (
     extract_reasoning,
     convert_tools_to_anthropic,
     convert_messages_to_anthropic,
+    strip_thinking_tags,
 )
 from services.ai_shared_tools import (
     SHARED_SIGNAL_TOOLS,
@@ -836,6 +837,12 @@ def generate_prompt_with_ai_stream(
                     reasoning_snapshot += f"\n[Round {tool_round}]\n{reasoning_content}"
                     yield f"data: {json.dumps({'type': 'reasoning', 'content': reasoning_content[:500]})}\n\n"
 
+                # Strip <thinking> text tags from content
+                content, tag_thinking = strip_thinking_tags(content)
+                if tag_thinking and not reasoning_content:
+                    reasoning_content = tag_thinking
+                    reasoning_snapshot += f"\n[Round {tool_round}]\n{tag_thinking}"
+
                 if tool_uses:
                     # Process tool calls
                     messages.append({
@@ -889,6 +896,11 @@ def generate_prompt_with_ai_stream(
                 # DeepSeek Reasoner returns reasoning_content which MUST be included in next request
                 # Unified fallback: also handles Qwen thinking field via extract_reasoning()
                 reasoning_content = message.get("reasoning_content", "") or extract_reasoning(message)
+
+                # Strip <thinking> text tags from content
+                content, tag_thinking = strip_thinking_tags(content)
+                if tag_thinking and not reasoning_content:
+                    reasoning_content = tag_thinking
 
                 if tool_calls:
                     # Process tool calls - MUST include reasoning_content for DeepSeek Reasoner

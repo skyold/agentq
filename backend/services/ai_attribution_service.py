@@ -23,7 +23,7 @@ from database.models import (
 )
 from database.snapshot_connection import SnapshotSessionLocal
 from database.snapshot_models import HyperliquidTrade
-from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning, convert_tools_to_anthropic, convert_messages_to_anthropic
+from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning, convert_tools_to_anthropic, convert_messages_to_anthropic, strip_thinking_tags
 
 logger = logging.getLogger(__name__)
 
@@ -904,6 +904,11 @@ def generate_attribution_analysis_stream(
                 content = message.get("content", "")
                 reasoning = message.get("reasoning_content", "") or extract_reasoning(message)
                 api_tool_calls = tool_calls if tool_calls else None
+
+            # Strip <thinking> text tags from content
+            content, tag_thinking = strip_thinking_tags(content)
+            if tag_thinking and not reasoning:
+                reasoning = tag_thinking
 
             if reasoning:
                 yield f"event: reasoning\ndata: {json.dumps({'content': reasoning[:200]})}\n\n"

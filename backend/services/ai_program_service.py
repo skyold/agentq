@@ -21,7 +21,7 @@ from database.models import (
     AiProgramConversation, AiProgramMessage, TradingProgram, Account,
     BacktestResult, BacktestTriggerLog, AccountProgramBinding
 )
-from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning, convert_tools_to_anthropic, convert_messages_to_anthropic
+from services.ai_decision_service import build_chat_completion_endpoints, detect_api_format, _extract_text_from_message, get_max_tokens, build_llm_payload, build_llm_headers, extract_reasoning, convert_tools_to_anthropic, convert_messages_to_anthropic, strip_thinking_tags
 from services.system_logger import system_logger
 from services.ai_shared_tools import (
     SHARED_SIGNAL_TOOLS,
@@ -2102,6 +2102,12 @@ You are creating a new program. Start fresh and design the strategy based on use
                     reasoning_snapshot += f"\n[Round {tool_round}]\n{reasoning_content}"
                     yield f"data: {json.dumps({'type': 'reasoning', 'content': reasoning_content[:500]})}\n\n"
 
+                # Strip <thinking> text tags from content
+                content, tag_thinking = strip_thinking_tags(content)
+                if tag_thinking and not reasoning_content:
+                    reasoning_content = tag_thinking
+                    reasoning_snapshot += f"\n[Round {tool_round}]\n{tag_thinking}"
+
                 if tool_uses:
                     # Store the raw content blocks for message history
                     assistant_msg_dict = {
@@ -2169,6 +2175,12 @@ You are creating a new program. Start fresh and design the strategy based on use
                     if reasoning:
                         reasoning_snapshot += f"\n[Round {tool_round}]\n{reasoning}"
                         yield f"data: {json.dumps({'type': 'reasoning', 'content': reasoning[:500]})}\n\n"
+
+                # Strip <thinking> text tags from content
+                content, tag_thinking = strip_thinking_tags(content)
+                if tag_thinking and not reasoning_content:
+                    reasoning_content = tag_thinking
+                    reasoning_snapshot += f"\n[Round {tool_round}]\n{tag_thinking}"
 
                 if tool_calls:
                     # Process tool calls - MUST include reasoning_content for DeepSeek Reasoner
