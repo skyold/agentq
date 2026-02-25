@@ -414,6 +414,7 @@ def build_messages_for_api(
 
     # /Command mode: detect /skill_name or /shortcut prefix and inject full SKILL.md
     command_skill = None
+    skill_injection = None  # Will be inserted as separate system msg before user msg
     # Build lookup maps: name -> name, shortcut -> name
     skill_lookup = {}
     for s in enabled_skills:
@@ -429,8 +430,11 @@ def build_messages_for_api(
             skill_result = load_skill(resolved_name)
             if skill_result.get("success"):
                 command_skill = resolved_name
-                system_prompt += (
-                    f"\n\n## Active Skill: {resolved_name}\n\n"
+                skill_injection = (
+                    f"[Active Skill: {resolved_name}]\n"
+                    f"The user triggered this skill via /{candidate} command. "
+                    f"You MUST follow the workflow below step by step, "
+                    f"executing ALL phases and checkpoints.\n\n"
                     f"{skill_result['content']}"
                 )
                 user_message = parts[1].strip() if len(parts) > 1 else "Please start this skill workflow."
@@ -485,8 +489,21 @@ def build_messages_for_api(
     restored_history = restore_tool_calls_to_messages(history_dicts, api_format)
     messages.extend(restored_history)
 
-    # Current user message
-    messages.append({"role": "user", "content": user_message})
+    # Current user message — if /command mode matched, the last message in
+    # restored_history is the raw "/health" saved by stream_chat_response.
+    # Replace it with the parsed user_message instead of appending a duplicate.
+    if command_skill and messages and messages[-1].get("role") == "user":
+        messages[-1]["content"] = user_message
+    else:
+        messages.append({"role": "user", "content": user_message})
+
+    # Inject skill workflow as a separate system message right before user message.
+    # Placed here (not in system prompt) so it's the last thing AI reads before
+    # the user's request, giving it highest attention weight.
+    if skill_injection:
+        user_msg = messages.pop()  # temporarily remove user msg
+        messages.append({"role": "system", "content": skill_injection})
+        messages.append(user_msg)  # put user msg back at the end
 
     # Apply compression if needed
     result = compress_messages(messages, api_config, db=db)
