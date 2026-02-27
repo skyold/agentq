@@ -1505,6 +1505,9 @@
     "nextStep": "Next Step",
     "back": "Back",
     "verifying": "Verifying...",
-    "connectBot": "Connect Bot"
+    "connectBot": "Connect Bot",
+    "manageTelegram": "Manage Telegram Bot",
+    "manageDesc": "Your bot is connected. You can change it below.",
+    "changeBot": "Change Bot"
   }
 }

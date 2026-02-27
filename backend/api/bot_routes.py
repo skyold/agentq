@@ -397,7 +397,7 @@ async def _process_telegram_message(
                 data = json.loads(data_str)
                 if event_type == "tool_call" and data.get("name"):
                     label = _get_tool_label(data["name"], lang)
-                    await send_telegram_message(token, chat_id, f"\U0001f527 {label}...")
+                    await send_telegram_message(token, chat_id, f"【🤖Hyper AI】{label}...")
                 elif event_type == "content":
                     full_response += data.get("text", "")
                 elif event_type == "error":

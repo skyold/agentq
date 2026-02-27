@@ -1525,6 +1525,9 @@
     "nextStep": "下一步",
     "back": "返回",
     "verifying": "验证中...",
-    "connectBot": "连接机器人"
+    "connectBot": "连接机器人",
+    "manageTelegram": "管理 Telegram 机器人",
+    "manageDesc": "机器人已连接。你可以在下方更换。",
+    "changeBot": "更换机器人"
   }
 }

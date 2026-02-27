@@ -16,6 +16,7 @@ interface BotIntegrationModalProps {
   onClose: () => void
   platform: 'telegram' | 'discord'
   onConnected: () => void
+  currentBotUsername?: string
 }
 
 export default function BotIntegrationModal({
@@ -23,22 +24,25 @@ export default function BotIntegrationModal({
   onClose,
   platform,
   onConnected,
+  currentBotUsername,
 }: BotIntegrationModalProps) {
   const { t } = useTranslation()
-  const [step, setStep] = useState(1)
+  const [step, setStep] = useState(0)
   const [token, setToken] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
+  const isConnected = !!currentBotUsername
+
   useEffect(() => {
     if (open) {
-      setStep(1)
+      setStep(isConnected ? 0 : 1)
       setToken('')
       setError(null)
       setCopied(false)
     }
-  }, [open])
+  }, [open, isConnected])
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text)
@@ -79,7 +83,7 @@ export default function BotIntegrationModal({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md" onInteractOutside={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {isTelegram ? (
@@ -87,15 +91,33 @@ export default function BotIntegrationModal({
             ) : (
               <DiscordIcon />
             )}
-            {t(`bot.connect${isTelegram ? 'Telegram' : 'Discord'}`)}
+            {isConnected
+              ? t('bot.manageTelegram', 'Manage Telegram Bot')
+              : t(`bot.connect${isTelegram ? 'Telegram' : 'Discord'}`)}
           </DialogTitle>
           <DialogDescription>
-            {t('bot.connectDesc', 'Follow these steps to connect your bot.')}
+            {isConnected
+              ? t('bot.manageDesc', 'Your bot is connected. You can change it below.')
+              : t('bot.connectDesc', 'Follow these steps to connect your bot.')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-2">
-          {/* Step 1: Open BotFather and create bot */}
+          {/* Step 0: Connected state - show current bot info */}
+          {step === 0 && isConnected && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3 p-3 rounded-lg border bg-green-500/5 border-green-500/20">
+                <span className="w-2.5 h-2.5 rounded-full bg-green-500 shrink-0"></span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium">@{currentBotUsername}</p>
+                  <p className="text-xs text-muted-foreground">{t('bot.connected', 'Connected')}</p>
+                </div>
+              </div>
+              <Button variant="outline" className="w-full" onClick={() => setStep(1)}>
+                {t('bot.changeBot', 'Change Bot')}
+              </Button>
+            </div>
+          )}
           {step === 1 && (
             <div className="space-y-3">
               <p className="text-sm">
