@@ -87,7 +87,7 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
   // 获取 watchlist
   useEffect(() => {
     fetchWatchlist()
-  }, [])
+  }, [selectedExchange])
 
   // 获取市场数据
   useEffect(() => {
@@ -140,7 +140,10 @@ export default function KlinesView({ onAccountUpdated }: KlinesViewProps) {
 
   const fetchWatchlist = async () => {
     try {
-      const response = await fetch('/api/hyperliquid/symbols/watchlist')
+      const endpoint = selectedExchange === 'binance'
+        ? '/api/binance/symbols/watchlist'
+        : '/api/hyperliquid/symbols/watchlist'
+      const response = await fetch(endpoint)
       const data = await response.json()
       const symbols = data.symbols || []
       setWatchlistSymbols(symbols)

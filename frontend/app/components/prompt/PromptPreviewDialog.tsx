@@ -4,6 +4,7 @@ import {
   previewPrompt,
   getAccounts,
   getHyperliquidWatchlist,
+  getBinanceWatchlist,
   TradingAccount,
   PromptPreviewItem,
 } from '@/lib/api'
@@ -42,15 +43,14 @@ export default function PromptPreviewDialog({
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [hyperliquidWatchlist, setHyperliquidWatchlist] = useState<string[]>([])
+  const [binanceWatchlist, setBinanceWatchlist] = useState<string[]>([])
   const [watchlistLoading, setWatchlistLoading] = useState(false)
   const { t } = useTranslation()
 
   useEffect(() => {
     if (open) {
       loadAccounts()
-      if (templateKey === 'hyperliquid') {
-        loadHyperliquidWatchlist()
-      }
+      loadWatchlists()
     }
   }, [open, templateKey])
 
@@ -71,14 +71,18 @@ export default function PromptPreviewDialog({
     }
   }
 
-  const loadHyperliquidWatchlist = async () => {
+  const loadWatchlists = async () => {
     setWatchlistLoading(true)
     try {
-      const response = await getHyperliquidWatchlist()
-      setHyperliquidWatchlist(response.symbols ?? [])
+      const [hlResponse, bnResponse] = await Promise.all([
+        getHyperliquidWatchlist(),
+        getBinanceWatchlist(),
+      ])
+      setHyperliquidWatchlist(hlResponse.symbols ?? [])
+      setBinanceWatchlist(bnResponse.symbols ?? [])
     } catch (err) {
       console.error(err)
-      toast.error('Failed to load Hyperliquid watchlist')
+      toast.error('Failed to load watchlists')
     } finally {
       setWatchlistLoading(false)
     }
@@ -229,26 +233,46 @@ export default function PromptPreviewDialog({
 
             {templateKey === 'hyperliquid' && (
               <div className="border-t pt-4">
-                <h3 className="text-sm font-semibold mb-2">Hyperliquid Watchlist</h3>
+                <h3 className="text-sm font-semibold mb-2">Configured Watchlists</h3>
                 <p className="text-xs text-muted-foreground mb-2">
-                  Prompt preview always uses the configured watchlist symbols
+                  Prompt preview uses the watchlist symbols for the selected exchange
                 </p>
                 {watchlistLoading ? (
                   <p className="text-xs text-muted-foreground">Loading watchlist…</p>
-                ) : hyperliquidWatchlist.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    No symbols configured yet. Configure them under AI Trader Management.
-                  </p>
                 ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {hyperliquidWatchlist.map((symbol) => (
-                      <span
-                        key={symbol}
-                        className="px-2 py-1 text-xs border rounded-md bg-muted text-muted-foreground"
-                      >
-                        {symbol}
-                      </span>
-                    ))}
+                  <div className="space-y-3">
+                    {selectedExchanges.includes('hyperliquid') && (
+                      <div>
+                        <p className="text-xs font-medium mb-1">Hyperliquid:</p>
+                        {hyperliquidWatchlist.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No symbols configured</p>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            {hyperliquidWatchlist.map((symbol) => (
+                              <span key={symbol} className="px-2 py-1 text-xs border rounded-md bg-muted text-muted-foreground">
+                                {symbol}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {selectedExchanges.includes('binance') && (
+                      <div>
+                        <p className="text-xs font-medium mb-1">Binance:</p>
+                        {binanceWatchlist.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No symbols configured</p>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            {binanceWatchlist.map((symbol) => (
+                              <span key={symbol} className="px-2 py-1 text-xs border rounded-md bg-muted text-muted-foreground">
+                                {symbol}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

@@ -396,6 +396,7 @@ def _generate_single_preview(
 
         # Get global trading environment (same as Hyperliquid)
         binance_environment = get_global_trading_mode(db)
+        environment = binance_environment
 
         binance_wallet = db.query(BinanceWallet).filter(
             BinanceWallet.account_id == account.id,
@@ -403,101 +404,155 @@ def _generate_single_preview(
             BinanceWallet.is_active == "true"
         ).first()
 
+        # IMPORTANT: If wallet not configured or API error, use N/A values but continue prompt generation.
+        # Any data fetch error should NOT block prompt generation - just show N/A for that section.
         if not binance_wallet or not binance_wallet.api_key_encrypted:
-            return {
-                "accountId": account.id,
-                "accountName": account.name,
-                "exchange": exchange,
-                "symbols": requested_symbols if requested_symbols else [],
-                "filledPrompt": f"Binance {binance_environment} wallet not configured for this account",
+            logger.warning(f"No Binance {binance_environment} wallet for {account.name}, using N/A values")
+            portfolio = {
+                'cash': 'N/A',
+                'frozen_cash': 'N/A',
+                'positions': {},
+                'total_assets': 'N/A'
             }
+            binance_state = None
+        else:
+            try:
+                api_key = decrypt_private_key(binance_wallet.api_key_encrypted)
+                secret_key = decrypt_private_key(binance_wallet.secret_key_encrypted)
 
-        api_key = decrypt_private_key(binance_wallet.api_key_encrypted)
-        secret_key = decrypt_private_key(binance_wallet.secret_key_encrypted)
+                client = BinanceTradingClient(
+                    api_key=api_key,
+                    secret_key=secret_key,
+                    environment=binance_environment
+                )
 
-        client = BinanceTradingClient(
-            api_key=api_key,
-            secret_key=secret_key,
-            environment=binance_environment
-        )
-        environment = binance_environment
+                account_state = client.get_account_state(db)
+                positions = client.get_positions()
 
-        account_state = client.get_account_state(db)
-        positions = client.get_positions()
+                portfolio = {
+                    'cash': account_state['available_balance'],
+                    'frozen_cash': account_state.get('used_margin', 0),
+                    'positions': {},
+                    'total_assets': account_state['total_equity']
+                }
 
-        portfolio = {
-            'cash': account_state['available_balance'],
-            'frozen_cash': account_state.get('used_margin', 0),
-            'positions': {},
-            'total_assets': account_state['total_equity']
-        }
+                for pos in positions:
+                    symbol = pos.get('coin') or pos.get('symbol', '')
+                    portfolio['positions'][symbol] = {
+                        'quantity': pos.get('szi') or pos.get('size', 0),
+                        'avg_cost': pos.get('entry_px') or pos.get('entry_price', 0),
+                        'current_value': pos.get('position_value', 0),
+                        'unrealized_pnl': pos.get('unrealized_pnl', 0),
+                        'leverage': pos.get('leverage', 1)
+                    }
 
-        for pos in positions:
-            symbol = pos.get('coin') or pos.get('symbol', '')
-            portfolio['positions'][symbol] = {
-                'quantity': pos.get('szi') or pos.get('size', 0),
-                'avg_cost': pos.get('entry_px') or pos.get('entry_price', 0),
-                'current_value': pos.get('position_value', 0),
-                'unrealized_pnl': pos.get('unrealized_pnl', 0),
-                'leverage': pos.get('leverage', 1)
-            }
+                binance_state = {
+                    'total_equity': account_state['total_equity'],
+                    'available_balance': account_state['available_balance'],
+                    'used_margin': account_state.get('used_margin', 0),
+                    'margin_usage_percent': account_state.get('margin_usage_percent', 0),
+                    'maintenance_margin': account_state.get('maintenance_margin', 0),
+                    'positions': positions
+                }
 
-        binance_state = {
-            'total_equity': account_state['total_equity'],
-            'available_balance': account_state['available_balance'],
-            'used_margin': account_state.get('used_margin', 0),
-            'margin_usage_percent': account_state.get('margin_usage_percent', 0),
-            'maintenance_margin': account_state.get('maintenance_margin', 0),
-            'positions': positions
-        }
-
-        logger.info(f"Preview: Using Binance {environment} data for {account.name}")
+                logger.info(f"Preview: Using Binance {environment} data for {account.name}")
+            except Exception as bn_err:
+                # API error - use N/A values, but continue with prompt generation
+                logger.warning(f"Failed to get Binance data for {account.name}: {bn_err}, using N/A values")
+                portfolio = {
+                    'cash': 'N/A',
+                    'frozen_cash': 'N/A',
+                    'positions': {},
+                    'total_assets': 'N/A'
+                }
+                binance_state = None
 
     else:
+        # Hyperliquid exchange
         from services.hyperliquid_environment import get_global_trading_mode, get_hyperliquid_client
+        from database.models import HyperliquidWallet
 
         hyperliquid_environment = get_global_trading_mode(db)
         environment = hyperliquid_environment
 
         if hyperliquid_environment in ["testnet", "mainnet"]:
-            client = get_hyperliquid_client(db, account.id, override_environment=hyperliquid_environment)
-            account_state = client.get_account_state(db)
-            positions = client.get_positions(db, include_timing=True)
+            # IMPORTANT: Check wallet exists BEFORE calling get_hyperliquid_client()
+            # If wallet not configured, use N/A values but still generate the prompt.
+            # Any data fetch error should NOT block prompt generation.
+            wallet = db.query(HyperliquidWallet).filter(
+                HyperliquidWallet.account_id == account.id,
+                HyperliquidWallet.environment == hyperliquid_environment,
+                HyperliquidWallet.is_active == "true"
+            ).first()
 
-            portfolio = {
-                'cash': account_state['available_balance'],
-                'frozen_cash': account_state.get('used_margin', 0),
-                'positions': {},
-                'total_assets': account_state['total_equity']
-            }
-
-            for pos in positions:
-                symbol = pos['coin']
-                portfolio['positions'][symbol] = {
-                    'quantity': pos['szi'],
-                    'avg_cost': pos['entry_px'],
-                    'current_value': pos['position_value'],
-                    'unrealized_pnl': pos['unrealized_pnl'],
-                    'leverage': pos['leverage']
+            if not wallet or not wallet.private_key_encrypted:
+                # No wallet - use N/A values, but continue with prompt generation
+                logger.warning(f"No Hyperliquid {hyperliquid_environment} wallet for {account.name}, using N/A values")
+                portfolio = {
+                    'cash': 'N/A',
+                    'frozen_cash': 'N/A',
+                    'positions': {},
+                    'total_assets': 'N/A'
                 }
+                hyperliquid_state = None
+            else:
+                try:
+                    client = get_hyperliquid_client(db, account.id, override_environment=hyperliquid_environment)
+                    account_state = client.get_account_state(db)
+                    positions = client.get_positions(db, include_timing=True)
 
-            hyperliquid_state = {
-                'total_equity': account_state['total_equity'],
-                'available_balance': account_state['available_balance'],
-                'used_margin': account_state.get('used_margin', 0),
-                'margin_usage_percent': account_state['margin_usage_percent'],
-                'maintenance_margin': account_state.get('maintenance_margin', 0),
-                'positions': positions
-            }
+                    portfolio = {
+                        'cash': account_state['available_balance'],
+                        'frozen_cash': account_state.get('used_margin', 0),
+                        'positions': {},
+                        'total_assets': account_state['total_equity']
+                    }
 
-            logger.info(f"Preview: Using Hyperliquid {hyperliquid_environment} data for {account.name}")
+                    for pos in positions:
+                        symbol = pos['coin']
+                        portfolio['positions'][symbol] = {
+                            'quantity': pos['szi'],
+                            'avg_cost': pos['entry_px'],
+                            'current_value': pos['position_value'],
+                            'unrealized_pnl': pos['unrealized_pnl'],
+                            'leverage': pos['leverage']
+                        }
+
+                    hyperliquid_state = {
+                        'total_equity': account_state['total_equity'],
+                        'available_balance': account_state['available_balance'],
+                        'used_margin': account_state.get('used_margin', 0),
+                        'margin_usage_percent': account_state['margin_usage_percent'],
+                        'maintenance_margin': account_state.get('maintenance_margin', 0),
+                        'positions': positions
+                    }
+
+                    logger.info(f"Preview: Using Hyperliquid {hyperliquid_environment} data for {account.name}")
+                except Exception as hl_err:
+                    # API error - use N/A values, but continue with prompt generation
+                    logger.warning(f"Failed to get Hyperliquid data for {account.name}: {hl_err}, using N/A values")
+                    portfolio = {
+                        'cash': 'N/A',
+                        'frozen_cash': 'N/A',
+                        'positions': {},
+                        'total_assets': 'N/A'
+                    }
+                    hyperliquid_state = None
         else:
-            portfolio = _get_portfolio_data(db, account)
+            # Environment not recognized - use N/A
+            portfolio = {
+                'cash': 'N/A',
+                'frozen_cash': 'N/A',
+                'positions': {},
+                'total_assets': 'N/A'
+            }
+            hyperliquid_state = None
 
     # Determine active symbols + metadata
     market_param = "binance" if exchange == "binance" else "CRYPTO"
 
     if exchange == "binance":
+        from services.binance_symbol_service import get_selected_symbols as get_binance_selected_symbols
         binance_watchlist = get_binance_selected_symbols()
         active_symbols = requested_symbols or binance_watchlist or base_symbol_order
         symbol_metadata_map = {sym: SUPPORTED_SYMBOLS.get(sym, sym) for sym in active_symbols}

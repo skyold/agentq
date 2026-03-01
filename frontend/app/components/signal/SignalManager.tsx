@@ -517,9 +517,12 @@ export default function SignalManager() {
   }
 
   // Load watchlist symbols
-  const loadWatchlist = async () => {
+  const loadWatchlist = async (exchange: string = 'hyperliquid') => {
     try {
-      const res = await fetch('/api/hyperliquid/symbols/watchlist')
+      const endpoint = exchange === 'binance'
+        ? '/api/binance/symbols/watchlist'
+        : '/api/hyperliquid/symbols/watchlist'
+      const res = await fetch(endpoint)
       if (res.ok) {
         const data = await res.json()
         const symbols = data.symbols || []
@@ -757,6 +760,9 @@ export default function SignalManager() {
     setPreviewLoading(true)
     setPreviewData(null)
 
+    // Load watchlist for the signal's exchange
+    loadWatchlist(signalExchange)
+
     try {
       // Step 1: Fetch K-lines from market API (ensures fresh data)
       // Use 500 klines to match the K-line page and provide more historical context
@@ -819,6 +825,9 @@ export default function SignalManager() {
     setPreviewDialogOpen(true)
     setPreviewLoading(true)
     setPreviewData(null)
+
+    // Load watchlist for the pool's exchange
+    loadWatchlist(poolExchange)
 
     try {
       // Step 1: Fetch K-lines with MACD indicator
@@ -1684,7 +1693,7 @@ export default function SignalManager() {
                   </SelectContent>
                 </Select>
                 {watchlistSymbols.length === 0 && (
-                  <span className="text-xs text-muted-foreground">{t('signals.dialog.addSymbolsHint', '(Add symbols in AI Trader)')}</span>
+                  <span className="text-xs text-muted-foreground">{t('signals.dialog.addSymbolsHint', '(Add symbols in Settings)')}</span>
                 )}
               </div>
               {analysisLoading ? (
@@ -1837,6 +1846,8 @@ export default function SignalManager() {
                   return signal?.exchange === v
                 })
                 setPoolForm(prev => ({ ...prev, exchange: v, signal_ids: matchingSignalIds }))
+                // Reload watchlist for the new exchange
+                loadWatchlist(v)
               }}>
                 <SelectTrigger>
                   <SelectValue>
@@ -2080,7 +2091,7 @@ export default function SignalManager() {
                   <span className="text-sm text-muted-foreground italic">No symbols in Watchlist</span>
                 )}
                 <span className="text-xs text-muted-foreground ml-2">
-                  (Manage symbols in AI Trader page)
+                  (Manage symbols in Settings page)
                 </span>
               </div>
             </div>
