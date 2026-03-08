@@ -70,11 +70,8 @@ async def list_user_accounts(session_token: str, db: Session = Depends(get_db)):
 
                     current_cash = float(account_state.get('available_balance', current_cash))
                     frozen_cash = float(account_state.get('used_margin', frozen_cash))
-                except Exception as hl_err:
-                    logger.warning(
-                        f"Failed to get Hyperliquid balance for {account.name}, "
-                        f"falling back to database values: {hl_err}"
-                    )
+                except Exception:
+                    pass  # No wallet configured or fetch failed — use database values
 
             result.append(
                 AccountOut(
@@ -186,11 +183,8 @@ async def get_account_details(
 
                 current_cash = float(account_state.get('available_balance', current_cash))
                 frozen_cash = float(account_state.get('used_margin', frozen_cash))
-            except Exception as hl_err:
-                logger.warning(
-                    f"Failed to get Hyperliquid balance for {account.name}, "
-                    f"falling back to database values: {hl_err}"
-                )
+            except Exception:
+                pass  # No wallet configured or fetch failed — use database values
 
         return AccountOut(
             id=account.id,

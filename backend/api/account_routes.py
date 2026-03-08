@@ -149,12 +149,8 @@ async def list_all_accounts(include_hidden: bool = False, db: Session = Depends(
                         f"Account {account.name}: Using cached Hyperliquid balance data "
                         f"(available=${current_cash:.2f}, used_margin=${frozen_cash:.2f})"
                     )
-                except Exception as hl_err:
-                    logger.warning(
-                        f"Failed to get Hyperliquid balance for {account.name}, "
-                        f"falling back to database values: {hl_err}"
-                    )
-                    # Keep database values on error
+                except Exception:
+                    pass  # No wallet configured or fetch failed — use database values
 
             # Derive wallet_address for mainnet accounts
             # Check both old architecture (accounts table) and new architecture (hyperliquid_wallets table)
