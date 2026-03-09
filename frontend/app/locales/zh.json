@@ -909,6 +909,19 @@
       "bothFieldsRequired": "API 钱包私钥和主钱包地址均为必填",
       "invalidAgentKey": "API 钱包私钥格式无效",
       "invalidMasterAddress": "主钱包地址格式无效"
+    },
+    "setup": {
+      "oneClick": "连接钱包并设置",
+      "inProgress": "设置中...",
+      "connecting": "正在连接浏览器钱包...",
+      "checkingAuth": "正在检查交易授权...",
+      "signingAuth": "请在钱包中确认 Hyper Alpha Arena 交易工具授权...",
+      "signingAgent": "请在钱包中确认创建 API 钱包...",
+      "saving": "正在保存钱包配置...",
+      "done": "钱包设置完成！",
+      "rejected": "用户拒绝了签名请求",
+      "mainnetHint": "连接浏览器钱包，授权 Hyper Alpha Arena 交易工具，并创建安全的 API 钱包。",
+      "testnetHint": "连接浏览器钱包并创建安全的 API 钱包用于测试网交易。"
     }
   },
   "strategy": {

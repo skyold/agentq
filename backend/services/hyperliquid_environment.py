@@ -261,8 +261,6 @@ def get_hyperliquid_client(db: Session, account_id: int, override_environment: s
     # Decrypt private key
     try:
         private_key = decrypt_private_key(encrypted_key)
-        import sys
-        print(f"[DEBUG] Decrypted private_key format: starts_with_0x={private_key.startswith('0x')}, length={len(private_key)}", file=sys.stderr, flush=True)
     except Exception as e:
         logger.error(f"Failed to decrypt private key for account {account_id}: {e}")
         raise ValueError(f"Private key decryption failed: {e}")
@@ -271,8 +269,6 @@ def get_hyperliquid_client(db: Session, account_id: int, override_environment: s
     wallet_address = wallet.wallet_address if wallet else None
     key_type = wallet.key_type if wallet and hasattr(wallet, 'key_type') and wallet.key_type else "private_key"
     master_wallet_address = wallet.master_wallet_address if wallet and hasattr(wallet, 'master_wallet_address') else None
-    import sys
-    print(f"[DEBUG] get_hyperliquid_client: account_id={account_id}, environment={environment}, wallet={wallet}, wallet_address={wallet_address}, key_type={key_type}", file=sys.stderr, flush=True)
     return get_cached_trading_client(
         account_id=account_id,
         private_key=private_key,

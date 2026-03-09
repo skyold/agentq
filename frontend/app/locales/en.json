@@ -889,6 +889,19 @@
       "bothFieldsRequired": "Both API Wallet Private Key and Master Wallet Address are required",
       "invalidAgentKey": "Invalid API Wallet private key format",
       "invalidMasterAddress": "Invalid master wallet address format"
+    },
+    "setup": {
+      "oneClick": "Connect Wallet & Setup",
+      "inProgress": "Setting up...",
+      "connecting": "Connecting browser wallet...",
+      "checkingAuth": "Checking trading authorization...",
+      "signingAuth": "Please approve Hyper Alpha Arena trading authorization in your wallet...",
+      "signingAgent": "Please approve API Wallet creation in your wallet...",
+      "saving": "Saving wallet configuration...",
+      "done": "Wallet setup complete!",
+      "rejected": "Signing rejected by user",
+      "mainnetHint": "Connects your browser wallet, authorizes Hyper Alpha Arena trading tools, and creates a secure API Wallet.",
+      "testnetHint": "Connects your browser wallet and creates a secure API Wallet for testnet trading."
     }
   },
   "strategy": {
