@@ -70,29 +70,45 @@ async function ensureSigningChain(): Promise<string | null> {
     return null
   }
 
+  // Best-effort chain switch: MetaMask requires it, Rabby/OKX don't need it.
+  // If switching fails (except user rejection), silently skip — the wallet
+  // may sign EIP-712 typed data regardless of active chain.
   try {
     await ethereum.request({
       method: 'wallet_switchEthereumChain',
       params: [{ chainId: SIGNING_CHAIN_ID }],
     })
+    return currentChainId
   } catch (switchErr: any) {
-    if (switchErr?.code === 4902) {
-      await ethereum.request({
-        method: 'wallet_addEthereumChain',
-        params: [{
-          chainId: SIGNING_CHAIN_ID,
-          chainName: 'Arbitrum Sepolia',
-          rpcUrls: ['https://sepolia-rollup.arbitrum.io/rpc'],
-          nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-          blockExplorerUrls: ['https://sepolia.arbiscan.io'],
-        }],
-      })
-    } else {
+    // User explicitly rejected — abort
+    if (switchErr?.code === 4001) {
       throw switchErr
     }
+    // Chain not added — try adding it
+    if (switchErr?.code === 4902) {
+      try {
+        await ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [{
+            chainId: SIGNING_CHAIN_ID,
+            chainName: 'Arbitrum Sepolia',
+            rpcUrls: ['https://sepolia-rollup.arbitrum.io/rpc'],
+            nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+            blockExplorerUrls: ['https://sepolia.arbiscan.io'],
+          }],
+        })
+        return currentChainId
+      } catch (addErr: any) {
+        if (addErr?.code === 4001) throw addErr
+        // Adding chain also failed — skip silently
+        console.warn('[WalletSetup] Chain add failed, proceeding without chain switch:', addErr?.message)
+        return null
+      }
+    }
+    // Any other error (Rabby "Unrecognized chain ID", etc.) — skip silently
+    console.warn('[WalletSetup] Chain switch failed, proceeding without chain switch:', switchErr?.message)
+    return null
   }
-
-  return currentChainId
 }
 
 /**
