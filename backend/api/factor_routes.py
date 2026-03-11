@@ -49,13 +49,15 @@ async def get_factor_library(db: Session = Depends(get_db)):
     # Built-in factors with source tag
     builtin = [{**f, "source": "builtin"} for f in FACTOR_REGISTRY]
 
-    # Custom factors from DB
+    # Custom factors from DB (includes builtin_expression and user-created)
     custom_rows = db.query(CustomFactor).filter(CustomFactor.is_active == True).all()
     custom = [
         {
-            "name": cf.name, "category": "custom",
+            "name": cf.name,
+            "category": cf.category if cf.category != "custom" else "custom",
             "display_name": cf.name, "display_name_zh": cf.name,
-            "description": cf.expression, "description_zh": cf.expression,
+            "description": cf.description or cf.expression,
+            "description_zh": cf.description or cf.expression,
             "source": cf.source or "custom",
             "expression": cf.expression,
             "custom_id": cf.id,
@@ -63,10 +65,22 @@ async def get_factor_library(db: Session = Depends(get_db)):
         for cf in custom_rows
     ]
 
+    # Collect all categories from both builtin and custom factors
+    all_categories = sorted(set(
+        FACTOR_CATEGORIES + [cf.category for cf in custom_rows if cf.category]
+    ))
+
+    # Merge category labels (expression engine labels + builtin labels + custom)
+    from services.factor_expression_engine import CATEGORY_LABELS as EXPR_LABELS
+    merged_labels = {**CATEGORY_LABELS, **EXPR_LABELS,
+                     "custom": {"en": "Custom", "zh": "自定义"},
+                     "composite": {"en": "Composite", "zh": "复合"},
+                     "statistical": {"en": "Statistical", "zh": "统计"}}
+
     return {
         "factors": builtin + custom,
-        "categories": FACTOR_CATEGORIES,
-        "category_labels": {**CATEGORY_LABELS, "custom": {"en": "Custom", "zh": "自定义"}},
+        "categories": all_categories,
+        "category_labels": merged_labels,
     }
 
 

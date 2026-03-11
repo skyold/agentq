@@ -74,6 +74,7 @@ MIGRATIONS = [
     "add_exchange_to_factor_effectiveness.py",
     "add_agent_wallet_fields.py",
     "create_custom_factors_table.py",
+    "insert_builtin_expression_factors.py",
 ]
 
 

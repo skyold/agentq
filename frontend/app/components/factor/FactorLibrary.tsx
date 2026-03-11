@@ -324,7 +324,7 @@ export default function FactorLibrary() {
       .map((f: any) => {
         const v = valMap.get(f.name)
         const e = effMap.get(f.name)
-        const isCustom = f.source !== 'builtin'
+        const isCustom = f.source !== 'builtin' && f.source !== 'builtin_expression'
         return {
           ...f, value: v?.value ?? null, timestamp: v?.timestamp, ...e,
           _isCustom: isCustom, _customId: f.custom_id ?? null, _expression: f.expression ?? null,
