@@ -190,6 +190,8 @@ data.get_market_data(symbol) -> dict                   # Complete market data (p
                                                        #           "open_interest": 10898599.47, "funding_rate": 0.0000425}
 data.get_flow(symbol, metric, period) -> dict          # Market flow metrics
 data.get_regime(symbol, period) -> RegimeInfo          # Market regime classification
+data.get_factor(symbol, factor_name) -> dict           # Factor value + effectiveness (IC/ICIR/win_rate/decay)
+data.get_factor_ranking(symbol, top_n=10) -> list      # Top factors by |ICIR|
 ```
 
 ### Position - Current position info (from data.positions)
@@ -820,8 +822,27 @@ BACKTEST_ANALYSIS_TOOLS = [
     }
 ]
 
+# Factor query tool (reused from hyper_ai_tools)
+FACTOR_QUERY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "query_factors",
+        "description": "Query factor library and effectiveness data. Without symbol: returns factor list with names (for use in data.get_factor()). With symbol: returns factor values and effectiveness ranking. Response includes IC, ICIR, win_rate, decay_half_life_hours.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "exchange": {"type": "string", "enum": ["hyperliquid", "binance"], "description": "Exchange (required)"},
+                "symbol": {"type": "string", "description": "Trading symbol (e.g., BTC). If omitted, returns factor library list."},
+                "factor_name": {"type": "string", "description": "Specific factor name for detailed info"},
+                "forward_period": {"type": "string", "enum": ["1h", "4h", "12h", "24h"], "description": "Forward period for effectiveness (default: 4h)"}
+            },
+            "required": ["exchange"]
+        }
+    }
+}
+
 # Combine all tools
-PROGRAM_TOOLS = PROGRAM_TOOLS + BACKTEST_ANALYSIS_TOOLS + SHARED_SIGNAL_TOOLS
+PROGRAM_TOOLS = PROGRAM_TOOLS + BACKTEST_ANALYSIS_TOOLS + SHARED_SIGNAL_TOOLS + [FACTOR_QUERY_TOOL]
 
 
 def _call_anthropic_streaming(endpoint: str, payload: dict, headers: dict, timeout: int = 180) -> dict:
@@ -1061,6 +1082,19 @@ Get price change over period.
 - symbol: "BTC", "ETH", etc.
 - period: "1m", "5m", "15m", "1h", "4h"
 - Returns: {"change_percent": 2.5, "change_usd": 2350.0}
+
+#### data.get_factor(symbol: str, factor_name: str) -> dict
+Get real-time factor value and effectiveness metrics.
+- symbol: "BTC", "ETH", etc.
+- factor_name: "RSI21", "MOM10", "VOL_RATIO", or any custom factor name
+- Returns: {"factor_name": "RSI21", "symbol": "BTC", "id": 5, "expression": "RSI(close, 21)", "description": "...", "category": "momentum", "value": 0.0234, "ic": 0.05, "icir": 1.35, "win_rate": 58.2, "decay_half_life_hours": -1}
+- decay_half_life_hours: -1=persistent, positive=half-life hours, None=insufficient data
+- Use `query_factors` tool to see all available factor names
+
+#### data.get_factor_ranking(symbol: str, top_n: int = 10) -> list
+Get top factors ranked by |ICIR| (most reliable first).
+- Returns: [{"factor_name": "SKEW20", "id": 12, "expression": "SKEW(RET(close,1),20)", "description": "...", "ic": -0.08, "icir": -2.1, "win_rate": 62.0, "decay_half_life_hours": -1}, ...]
+- Not available in backtest mode
 
 ### Available in Sandbox
 - time: For timestamp operations (time.time() returns Unix timestamp)
@@ -1580,6 +1614,14 @@ def _execute_tool(
             if backtest_id is None:
                 return json.dumps({"error": "backtest_id is required"})
             return _get_trigger_details(db, backtest_id, indexes, fields)
+
+        elif tool_name == "query_factors":
+            from services.hyper_ai_tools import execute_query_factors
+            exchange = arguments.get("exchange", "hyperliquid")
+            symbol = arguments.get("symbol")
+            factor_name = arguments.get("factor_name")
+            forward_period = arguments.get("forward_period", "4h")
+            return execute_query_factors(db, exchange, symbol, factor_name, forward_period)
 
         else:
             return f"Unknown tool: {tool_name}"

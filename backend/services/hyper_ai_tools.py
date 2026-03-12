@@ -2547,10 +2547,15 @@ def execute_evaluate_factor(
 
 def execute_save_factor(db: Session, name: str, expression: str, description: str = "") -> str:
     """Save a custom factor expression to the library."""
+    import re
     from database.models import CustomFactor
     from services.factor_expression_engine import factor_expression_engine
 
     try:
+        # Validate factor name format
+        if not re.match(r'^[A-Za-z][A-Za-z0-9_]*$', name):
+            return json.dumps({"error": "Factor name must start with a letter and contain only English letters, digits, and underscores (e.g., RSI_fast, momentum_v2)"})
+
         ok, err = factor_expression_engine.validate(expression)
         if not ok:
             return json.dumps({"error": f"Invalid expression: {err}"})

@@ -485,3 +485,109 @@ class DataProvider:
             self._log_query("get_market_data", {"symbol": symbol, "exchange": self.exchange}, {"error": str(e)})
 
         return {}
+
+    def get_factor(self, symbol: str, factor_name: str) -> Dict[str, Any]:
+        """Get real-time factor value and effectiveness for a symbol.
+
+        Returns dict with: value, ic, icir, win_rate, decay_half_life_hours.
+        Factor value is computed from latest K-lines; effectiveness is from DB.
+        """
+        from database.models import CustomFactor
+        from services.factor_expression_engine import factor_expression_engine
+        from services.market_data import get_kline_data
+        from sqlalchemy import text as sa_text
+        import pandas as pd
+
+        result = {"factor_name": factor_name, "symbol": symbol, "value": None}
+
+        try:
+            factor = self.db.query(CustomFactor).filter(
+                CustomFactor.name == factor_name,
+                CustomFactor.is_active == True
+            ).first()
+            if not factor:
+                result["error"] = f"Factor '{factor_name}' not found"
+                self._log_query("get_factor", {"symbol": symbol, "factor_name": factor_name}, result)
+                return result
+
+            # Include factor metadata
+            result["id"] = factor.id
+            result["expression"] = factor.expression
+            result["description"] = factor.description or ""
+            result["category"] = factor.category
+
+            klines = get_kline_data(symbol, market=self._get_market_param(), period="5m", count=300)
+            if klines and len(klines) >= 30:
+                series, err = factor_expression_engine.execute(factor.expression, klines)
+                if series is not None and len(series) > 0:
+                    last_val = series.iloc[-1]
+                    if not pd.isna(last_val):
+                        result["value"] = round(float(last_val), 6)
+
+            row = self.db.execute(sa_text(
+                "SELECT ic_mean, icir, win_rate, decay_half_life "
+                "FROM factor_effectiveness "
+                "WHERE factor_name = :fn AND symbol = :sym AND exchange = :ex "
+                "ORDER BY created_at DESC LIMIT 1"
+            ), {"fn": factor_name, "sym": symbol, "ex": self.exchange}).fetchone()
+
+            if row:
+                result["ic"] = round(float(row[0]), 4) if row[0] is not None else None
+                result["icir"] = round(float(row[1]), 2) if row[1] is not None else None
+                result["win_rate"] = round(float(row[2]), 2) if row[2] is not None else None
+                result["decay_half_life_hours"] = int(row[3]) if row[3] is not None else None
+
+        except Exception as e:
+            result["error"] = str(e)
+
+        self._log_query("get_factor", {"symbol": symbol, "factor_name": factor_name}, result)
+        return result
+
+    def get_factor_ranking(self, symbol: str, top_n: int = 10) -> List[Dict[str, Any]]:
+        """Get top factors ranked by |ICIR| for a symbol.
+
+        Returns list of dicts with: factor_name, id, expression, description, ic, icir, win_rate, decay_half_life_hours.
+        """
+        from database.models import CustomFactor
+        from sqlalchemy import text as sa_text
+
+        results = []
+        try:
+            rows = self.db.execute(sa_text(
+                "SELECT DISTINCT ON (factor_name) factor_name, ic_mean, icir, win_rate, decay_half_life "
+                "FROM factor_effectiveness "
+                "WHERE symbol = :sym AND exchange = :ex AND icir IS NOT NULL "
+                "ORDER BY factor_name, created_at DESC"
+            ), {"sym": symbol, "ex": self.exchange}).fetchall()
+
+            # Batch load factor metadata
+            factor_names = [r[0] for r in rows]
+            factors = self.db.query(CustomFactor).filter(
+                CustomFactor.name.in_(factor_names),
+                CustomFactor.is_active == True
+            ).all()
+            factor_meta = {f.name: f for f in factors}
+
+            ranked = []
+            for r in rows:
+                fname = r[0]
+                fobj = factor_meta.get(fname)
+                entry = {
+                    "factor_name": fname,
+                    "id": fobj.id if fobj else None,
+                    "expression": fobj.expression if fobj else None,
+                    "description": (fobj.description or "") if fobj else "",
+                    "ic": round(float(r[1]), 4) if r[1] is not None else None,
+                    "icir": round(float(r[2]), 2) if r[2] is not None else None,
+                    "win_rate": round(float(r[3]), 2) if r[3] is not None else None,
+                    "decay_half_life_hours": int(r[4]) if r[4] is not None else None,
+                }
+                ranked.append(entry)
+            ranked.sort(key=lambda x: abs(x["icir"] or 0), reverse=True)
+            results = ranked[:top_n]
+
+        except Exception as e:
+            results = [{"error": str(e)}]
+
+        self._log_query("get_factor_ranking", {"symbol": symbol, "top_n": top_n}, results)
+        return results

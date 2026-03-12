@@ -82,6 +82,56 @@ class BacktestDataProvider:
     def get_price_change(self, symbol: str, period: str) -> Dict:
         return {"change_percent": 0.0, "change_usd": 0.0}
 
+    def get_factor(self, symbol: str, factor_name: str) -> Dict:
+        """Compute factor value from historical K-line slice at current_index."""
+        from database.models import CustomFactor
+        from services.factor_expression_engine import factor_expression_engine
+        from database.connection import SessionLocal
+        import pandas as pd
+
+        result = {"factor_name": factor_name, "symbol": symbol, "value": None}
+        try:
+            db = SessionLocal()
+            try:
+                factor = db.query(CustomFactor).filter(
+                    CustomFactor.name == factor_name,
+                    CustomFactor.is_active == True
+                ).first()
+                if not factor:
+                    result["error"] = f"Factor '{factor_name}' not found"
+                    return result
+                expression = factor.expression
+            finally:
+                db.close()
+
+            # Use 5m klines up to current_index
+            key = f"{symbol}_5m"
+            if key not in self.klines:
+                return result
+            end_idx = min(self.current_index + 1, len(self.klines[key]))
+            slice_klines = self.klines[key][max(0, end_idx - 300):end_idx]
+            if len(slice_klines) < 30:
+                return result
+
+            # Convert Kline objects to dicts for expression engine
+            kline_dicts = [
+                {"open": k.open, "high": k.high, "low": k.low,
+                 "close": k.close, "volume": k.volume, "timestamp": k.timestamp}
+                for k in slice_klines
+            ]
+            series, err = factor_expression_engine.execute(expression, kline_dicts)
+            if series is not None and len(series) > 0:
+                last_val = series.iloc[-1]
+                if not pd.isna(last_val):
+                    result["value"] = round(float(last_val), 6)
+        except Exception as e:
+            result["error"] = str(e)
+        return result
+
+    def get_factor_ranking(self, symbol: str, top_n: int = 10) -> List[Dict]:
+        """Not available in backtest mode."""
+        return []
+
 
 class BacktestEngine:
     """Runs backtest simulation on historical data."""

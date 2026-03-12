@@ -441,7 +441,7 @@ class FactorEffectivenessService:
                 dhl = self._compute_decay_half_life(ic_by_fp, forward_periods)
                 for fp_label, metrics in metrics_by_fp.items():
                     metrics["decay_half_life"] = dhl
-                    self._upsert(db, exchange, cf.name, "custom",
+                    self._upsert(db, exchange, cf.name, cf.category or "custom",
                                  symbol, period, fp_label, today, n_bars, metrics)
                     count += 1
             except Exception as e:

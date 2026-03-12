@@ -1713,7 +1713,7 @@
     "latestValue": "最新值",
     "saveToLibrary": "保存到因子库",
     "factorName": "因子名称",
-    "factorNamePlaceholder": "例如 EMA比率 7/21",
+    "factorNamePlaceholder": "例如 EMA_ratio_7_21（仅英文字母、数字、下划线）",
     "description": "描述",
     "descriptionPlaceholder": "可选描述",
     "saving": "保存中...",

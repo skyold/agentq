@@ -3,7 +3,7 @@
 > Track file for factor system development.
 > Read `docs/factor-system-spec.md` for full design specification.
 
-## Current Phase: Phase 3 COMPLETE — Signal Pool Integration
+## Current Phase: Phase 4 IN PROGRESS — AI Integration
 
 ## Development Rules
 
@@ -194,9 +194,33 @@ expanded from 22 to 86 using expression engine.
 - [x] i18n: decay, decayTooltip (en + zh)
 
 ### Phase 4: AI Trader & Program Trader Integration
-- [ ] AI Trader: factor context injection into prompts
-- [ ] Program Trader: data_provider factor API
-- [ ] Theory vs Reality dashboard (factor IC vs actual signal win rate)
+### Phase 4: AI + Program Factor Integration (IN PROGRESS)
+
+**4-Fix: Legacy Fixes** ✅
+- [x] `factor_effectiveness_service.py`: category hardcode fix (`"custom"` → `cf.category`)
+- [x] Factor naming validation: English letters + digits + underscores only
+- [x] Frontend naming placeholder updated
+
+**4A: Signal Trigger Factor Enrichment** ✅
+- [x] `signal_detection_service.py`: `_enrich_factor_effectiveness()` — adds IC/ICIR/win_rate/decay to factor signal dicts
+- [x] `ai_decision_service.py`: Format `factor_effectiveness` in trigger context text for AI
+
+**4B: Factor Prompt Variables (AI Trader)** ✅
+- [x] `ai_decision_service.py`: `_parse_factor_variables()` + `_build_factor_context()` — `{SYMBOL_factor_NAME}` → value+IC+ICIR+decay
+- [x] `PROMPT_VARIABLES_REFERENCE.md` + `_ZH.md`: Factor Variables section
+- [x] `prompt_generation_system_prompt.md`: Factor Variables knowledge for Prompt AI
+- [x] `ai_prompt_generation_service.py`: `query_factors` tool added + factor pattern in VALID_VARIABLE_PATTERNS
+- [x] `ai_prompt_generation_service.py`: `validate_variables` recognizes `{SYMBOL_factor_NAME}`
+
+**4C: Program Trader Factor API** ✅
+- [x] `program_trader/data_provider.py`: `get_factor()` + `get_factor_ranking()`
+- [x] `program_trader/backtest.py`: `BacktestDataProvider.get_factor()` (historical K-line slice)
+- [x] `program_trader/models.py`: `MarketData.get_factor()` + `get_factor_ranking()` delegates
+- [x] `ai_program_service.py`: `query_factors` tool added to PROGRAM_TOOLS + execution routing
+- [x] `ai_program_service.py`: System prompt updated with factor API docs
+- [x] `PROGRAM_DEV_GUIDE.md`: `get_factor()` + `get_factor_ranking()` documentation
+
+**4D: Theory vs Reality** — Deferred
 
 ## Decisions Log
 

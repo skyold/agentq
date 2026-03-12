@@ -383,6 +383,62 @@ Hourly Context:
 
 ---
 
+## Factor Variables (Advanced)
+
+Factor variables inject real-time factor values and effectiveness metrics into your prompt.
+
+### Format
+
+`{SYMBOL_factor_NAME}` — e.g., `{BTC_factor_RSI21}`, `{ETH_factor_MOM10}`
+
+### Output Content
+
+Each variable resolves to a text block with factor metadata, real-time value, and effectiveness:
+
+```
+name=RSI21(id=5) | expr=RSI(close, 21) | desc=RSI with 21-period lookback | value=0.0234 | IC=0.0512 | ICIR=1.35 | WinRate=52.0% | Persistent
+```
+
+- **name(id)**: Factor name and database ID
+- **expr**: Factor expression formula
+- **desc**: Human-readable description
+- **value**: Real-time factor value computed from latest K-lines
+- **IC**: Information Coefficient (predictive power, daily average)
+- **ICIR**: IC Information Ratio (IC stability, higher = more reliable)
+- **WinRate**: Percentage of days factor correctly predicted direction
+- **Decay**: `Persistent` (IC strengthens over time) or `Decay=Xh` (half-life in hours)
+
+### Built-in Factor Names
+
+| Name | Description |
+|------|-------------|
+| `RSI14` | RSI(close, 14) |
+| `RSI21` | RSI(close, 21) |
+| `MOM5` | Rate of change over 5 periods |
+| `MOM10` | Rate of change over 10 periods |
+| `SKEW20` | Return skewness over 20 periods |
+| `KURT20` | Return kurtosis over 20 periods |
+| `VOL_RATIO` | Volume ratio (current / 20-period avg) |
+| `ILLIQ20` | Amihud illiquidity measure |
+| `REALIZED_VOL10` | Realized volatility over 10 periods |
+| `REALIZED_VOL30` | Realized volatility over 30 periods |
+| `HIGH_LOW_RANGE` | (High - Low) / Close |
+
+Custom factors created in the Factor Library also work. Use the `query_factors` tool (in Prompt AI or Hyper AI) to see all available factor names.
+
+### Example Usage
+
+```
+Current factor readings for BTC:
+- RSI21: {BTC_factor_RSI21}
+- Momentum: {BTC_factor_MOM10}
+- Volatility: {BTC_factor_REALIZED_VOL10}
+
+Use factor IC and ICIR to gauge signal reliability. Persistent factors are suitable for swing strategies; short-decay factors for scalping.
+```
+
+---
+
 ## Need Help?
 
 If you're unsure how to use these variables or want a more sophisticated trading strategy, try the **AI Prompt Generation** feature (requires membership).

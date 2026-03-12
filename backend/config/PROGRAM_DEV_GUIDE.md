@@ -863,6 +863,77 @@ change = data.get_price_change("BTC", "5m")
 }
 ```
 
+#### get_factor(symbol, factor_name)
+
+Get real-time factor value and effectiveness metrics.
+
+**Parameters**:
+- `symbol`: Trading symbol (e.g., "BTC")
+- `factor_name`: Factor name (e.g., "RSI21", "MOM10", or custom factor name)
+
+**Example Return**:
+```python
+f = data.get_factor("BTC", "RSI21")
+# Returns:
+{
+  "factor_name": "RSI21",
+  "symbol": "BTC",
+  "id": 5,                          # Factor ID in database
+  "expression": "RSI(close, 21)",    # Factor formula
+  "description": "Relative Strength Index with 21-period lookback",
+  "category": "momentum",           # Factor category
+  "value": 0.0234,                   # Real-time value (from latest K-lines)
+  "ic": 0.0512,                     # Information Coefficient (predictive power)
+  "icir": 1.35,                     # IC Information Ratio (stability)
+  "win_rate": 58.2,                 # Win rate percentage
+  "decay_half_life_hours": -1       # -1=Persistent, positive=half-life hours, None=insufficient data
+}
+```
+
+**Example Usage**:
+```python
+f = data.get_factor("BTC", "MOM10")
+if f["value"] is not None and f["value"] > 0.02:
+    # Strong positive momentum
+    if f.get("icir") and abs(f["icir"]) > 1.0:
+        # Factor has reliable predictive power
+        log(f"MOM10 triggered: value={f['value']}, ICIR={f['icir']}, expr={f['expression']}")
+        pass
+```
+
+**Note**: In backtest mode, `value` is computed from historical K-lines at the current bar. Effectiveness fields (`ic`, `icir`, etc.) are not available in backtest. Metadata (`id`, `expression`, `description`) is always available.
+
+#### get_factor_ranking(symbol, top_n=10)
+
+Get top factors ranked by |ICIR| (most reliable predictors first).
+
+**Parameters**:
+- `symbol`: Trading symbol
+- `top_n`: Number of top factors to return (default: 10)
+
+**Example Return**:
+```python
+ranking = data.get_factor_ranking("BTC", top_n=5)
+# Returns list sorted by |ICIR| descending:
+[
+  {
+    "factor_name": "SKEW20", "id": 12,
+    "expression": "SKEW(RET(close, 1), 20)",
+    "description": "20-period return skewness",
+    "ic": -0.08, "icir": -2.1, "win_rate": 62.0, "decay_half_life_hours": -1
+  },
+  {
+    "factor_name": "MOM10", "id": 8,
+    "expression": "RET(close, 10)",
+    "description": "10-period momentum (rate of change)",
+    "ic": 0.05, "icir": 1.5, "win_rate": 55.0, "decay_half_life_hours": 8
+  },
+  ...
+]
+```
+
+**Note**: Not available in backtest mode (returns empty list).
+
 ---
 
 ## Decision Object

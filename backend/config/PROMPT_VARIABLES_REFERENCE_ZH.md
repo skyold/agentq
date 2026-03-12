@@ -383,6 +383,58 @@ Hourly Context:
 
 ---
 
+## 因子变量（高级）
+
+因子变量将实时因子值和有效性指标注入提示词。
+
+### 格式
+
+`{SYMBOL_factor_NAME}` — 例如 `{BTC_factor_RSI21}`、`{ETH_factor_MOM10}`
+
+### 输出内容
+
+每个变量解析为包含因子元数据、实时值和有效性的文本：
+
+```
+name=RSI21(id=5) | expr=RSI(close, 21) | desc=RSI 21周期 | value=0.0234 | IC=0.0512 | ICIR=1.35 | WinRate=52.0% | Persistent
+```
+
+- **name(id)**: 因子名称和数据库ID
+- **expr**: 因子公式表达式
+- **desc**: 因子描述
+- **value**: 基于最新K线实时计算的因子值
+- **IC**: 信息系数（预测能力，日均值）
+- **ICIR**: IC信息比率（IC稳定性，越高越可靠）
+- **WinRate**: 因子正确预测方向的天数百分比
+- **Decay**: `Persistent`（IC随时间增强，趋势因子）或 `Decay=Xh`（半衰期，小时）
+
+### 内置因子名称
+
+| 名称 | 描述 |
+|------|------|
+| `RSI14` | RSI(close, 14) |
+| `RSI21` | RSI(close, 21) |
+| `MOM5` | 5周期动量 |
+| `MOM10` | 10周期动量 |
+| `VOL_RATIO` | 成交量比率 |
+| `REALIZED_VOL10` | 10周期已实现波动率 |
+| `HIGH_LOW_RANGE` | (最高 - 最低) / 收盘 |
+
+自定义因子也可使用。使用 `query_factors` 工具查看所有可用因子名称。
+
+### 使用示例
+
+```
+当前BTC因子读数：
+- RSI21: {BTC_factor_RSI21}
+- 动量: {BTC_factor_MOM10}
+- 波动率: {BTC_factor_REALIZED_VOL10}
+
+根据因子IC和ICIR判断信号可靠性。持久型因子适合波段策略，短衰减因子适合短线。
+```
+
+---
+
 ## 需要帮助？
 
 如果您不确定如何使用这些变量或想要更复杂的交易策略，请尝试**AI提示词生成**功能（需要会员）。

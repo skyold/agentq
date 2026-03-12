@@ -254,7 +254,25 @@ PROMPT_TOOLS = [
                 "required": ["prompt_text", "summary"]
             }
         }
-    }
+    },
+    # Factor query tool (reused from hyper_ai_tools)
+    {
+        "type": "function",
+        "function": {
+            "name": "query_factors",
+            "description": "Query factor library and effectiveness data. Without symbol: returns factor list with names (for use in prompt variables like {SYMBOL_factor_NAME}). With symbol: returns factor values and effectiveness ranking. Response includes IC, ICIR, win_rate, decay_half_life_hours.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "exchange": {"type": "string", "enum": ["hyperliquid", "binance"], "description": "Exchange (required)"},
+                    "symbol": {"type": "string", "description": "Trading symbol (e.g., BTC). If omitted, returns factor library list."},
+                    "factor_name": {"type": "string", "description": "Specific factor name for detailed info"},
+                    "forward_period": {"type": "string", "enum": ["1h", "4h", "12h", "24h"], "description": "Forward period for effectiveness (default: 4h)"}
+                },
+                "required": ["exchange"]
+            }
+        }
+    },
 ] + PROMPT_CONTEXT_TOOLS + SHARED_SIGNAL_TOOLS  # Add context tools and shared signal pool tools
 
 
@@ -285,6 +303,8 @@ VALID_VARIABLE_PATTERNS = [
     r"[A-Z]+_(?:MA|EMA|RSI14|RSI7|MACD|BOLL|ATR14|VWAP|OBV|STOCH)_(?:1m|3m|5m|15m|30m|1h|2h|4h|8h|12h|1d)",
     # Flow indicators
     r"[A-Z]+_(?:CVD|OI|OI_DELTA|TAKER|FUNDING|DEPTH|IMBALANCE)_(?:1m|3m|5m|15m|30m|1h|2h|4h)",
+    # Factor variables: {SYMBOL_factor_NAME}
+    r"[A-Z][A-Z0-9]*_factor_[A-Za-z][A-Za-z0-9_]*",
 ]
 
 
@@ -582,6 +602,16 @@ def execute_tool(tool_name: str, args: Dict[str, Any], request_id: str, db: Sess
             period = args.get("period", "1h")
             exchange = args.get("exchange", "hyperliquid")
             return execute_query_market_data(db, symbol, period, exchange)
+
+        elif tool_name == "query_factors":
+            if db is None:
+                return json.dumps({"error": "Database session not available"})
+            from services.hyper_ai_tools import execute_query_factors
+            exchange = args.get("exchange", "hyperliquid")
+            symbol = args.get("symbol")
+            factor_name = args.get("factor_name")
+            forward_period = args.get("forward_period", "4h")
+            return execute_query_factors(db, exchange, symbol, factor_name, forward_period)
 
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})

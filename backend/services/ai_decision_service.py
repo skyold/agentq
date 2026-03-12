@@ -947,6 +947,21 @@ def _build_prompt_context(
             logger.warning(f"Failed to build K-line context: {e}", exc_info=True)
 
     # ============================================================================
+    # FACTOR VARIABLES PROCESSING
+    # ============================================================================
+    # Process factor variables like {BTC_factor_RSI21} from prompt template.
+    # Returns real-time factor value + effectiveness (IC/ICIR/win_rate/decay).
+    factor_context = {}
+    if template_text:
+        try:
+            factor_vars = _parse_factor_variables(template_text)
+            if factor_vars:
+                factor_context = _build_factor_context(factor_vars, environment, exchange)
+                logger.debug(f"Built factor context with {len(factor_context)} variables")
+        except Exception as e:
+            logger.warning(f"Failed to build factor context: {e}", exc_info=True)
+
+    # ============================================================================
     # TRIGGER CONTEXT FORMATTING
     # ============================================================================
     # Format trigger context into structured text for AI prompt.
@@ -1016,6 +1031,22 @@ def _build_prompt_context(
                         lines.append(f"    time_window: {time_window}")
                         lines.append(f"    condition: {operator} {threshold_display}")
                         lines.append(f"    current_value: {value_display}")
+
+                        # Factor effectiveness context
+                        fe = sig.get("factor_effectiveness")
+                        if fe:
+                            parts = []
+                            if fe.get("ic") is not None:
+                                parts.append(f"IC={fe['ic']}")
+                            if fe.get("icir") is not None:
+                                parts.append(f"ICIR={fe['icir']}")
+                            if fe.get("win_rate") is not None:
+                                parts.append(f"WinRate={fe['win_rate']}%")
+                            dh = fe.get("decay_half_life_hours")
+                            if dh is not None:
+                                parts.append("Persistent" if dh == -1 else f"Decay={dh}h")
+                            if parts:
+                                lines.append(f"    factor_effectiveness: {' '.join(parts)}")
         elif trigger_type == "scheduled":
             interval = trigger_context.get("trigger_interval", "N/A")
             lines.append(f"trigger_interval: {interval} seconds")
@@ -1208,6 +1239,8 @@ Regime Types:
         **kline_context,  # Merge K-line/indicator variables like {BTC_klines_15m}, {BTC_MACD_15m}, etc.
         # Market Regime classification variables (multi-timeframe)
         **market_regime_context,  # Merge {market_regime}, {BTC_market_regime_5m}, etc.
+        # Factor variables like {BTC_factor_RSI21}
+        **factor_context,
     }
 
 
@@ -2568,6 +2601,107 @@ def _parse_kline_indicator_variables(template_text: str) -> Dict[str, Dict[str, 
 
     logger.info(f"Parsed {len(grouped)} groups of K-line/indicator/flow/market-data variables")
     return grouped
+
+
+def _parse_factor_variables(template_text: str) -> List[tuple]:
+    """
+    Parse factor variables from prompt template.
+    Format: {SYMBOL_factor_NAME} where NAME is [A-Za-z][A-Za-z0-9_]*
+    Returns list of (symbol, factor_name, var_name) tuples.
+    """
+    pattern = r'\{([A-Z][A-Z0-9]*)_factor_([A-Za-z][A-Za-z0-9_]*)\}'
+    results = []
+    seen = set()
+    for match in re.finditer(pattern, template_text):
+        symbol = match.group(1)
+        factor_name = match.group(2)
+        if symbol == "SYMBOL":
+            continue
+        key = (symbol, factor_name)
+        if key not in seen:
+            seen.add(key)
+            var_name = f"{symbol}_factor_{factor_name}"
+            results.append((symbol, factor_name, var_name))
+    return results
+
+
+def _build_factor_context(
+    factor_vars: List[tuple], environment: str, exchange: str
+) -> Dict[str, str]:
+    """
+    Build factor context dict for prompt template variables.
+    Each variable {SYMBOL_factor_NAME} resolves to a text block with value + effectiveness.
+    """
+    from database.connection import SessionLocal
+    from database.models import CustomFactor
+    from services.factor_expression_engine import factor_expression_engine
+    from services.market_data import get_kline_data
+    from sqlalchemy import text as sa_text
+    import pandas as pd
+
+    context = {}
+    db = SessionLocal()
+    try:
+        # Batch load factor expressions
+        factor_names = list(set(fn for _, fn, _ in factor_vars))
+        factors = db.query(CustomFactor).filter(
+            CustomFactor.name.in_(factor_names),
+            CustomFactor.is_active == True
+        ).all()
+        factor_obj_map = {f.name: f for f in factors}
+
+        for symbol, factor_name, var_name in factor_vars:
+            try:
+                fobj = factor_obj_map.get(factor_name)
+                if not fobj:
+                    context[var_name] = f"Factor '{factor_name}' not found"
+                    continue
+
+                # Compute real-time factor value from K-lines
+                market = "binance" if exchange == "binance" else "CRYPTO"
+                klines = get_kline_data(symbol, market=market, period="5m", count=300)
+                value_str = "N/A"
+                if klines and len(klines) >= 30:
+                    series, err = factor_expression_engine.execute(fobj.expression, klines)
+                    if series is not None and len(series) > 0:
+                        last_val = series.iloc[-1]
+                        if not pd.isna(last_val):
+                            value_str = f"{float(last_val):.4f}"
+
+                # Read effectiveness from DB
+                row = db.execute(sa_text(
+                    "SELECT ic_mean, icir, win_rate, decay_half_life "
+                    "FROM factor_effectiveness "
+                    "WHERE factor_name = :fn AND symbol = :sym AND exchange = :ex "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ), {"fn": factor_name, "sym": symbol, "ex": exchange}).fetchone()
+
+                # Build output: name(id) | expression | description | value | effectiveness
+                desc = fobj.description or ""
+                parts = [f"name={factor_name}(id={fobj.id})", f"expr={fobj.expression}"]
+                if desc:
+                    parts.append(f"desc={desc}")
+                parts.append(f"value={value_str}")
+                if row:
+                    if row[0] is not None:
+                        parts.append(f"IC={float(row[0]):.4f}")
+                    if row[1] is not None:
+                        parts.append(f"ICIR={float(row[1]):.2f}")
+                    if row[2] is not None:
+                        parts.append(f"WinRate={float(row[2]):.1f}%")
+                    if row[3] is not None:
+                        dh = int(row[3])
+                        parts.append("Persistent" if dh == -1 else f"Decay={dh}h")
+
+                context[var_name] = " | ".join(parts)
+            except Exception as e:
+                logger.warning(f"Failed to compute factor {factor_name} for {symbol}: {e}")
+                context[var_name] = f"Error computing factor"
+
+    finally:
+        db.close()
+
+    return context
 
 
 def _format_single_indicator(indicator_name: str, indicator_data: Any) -> str:

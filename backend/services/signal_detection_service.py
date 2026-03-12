@@ -424,7 +424,7 @@ class SignalDetectionService:
         # DEBUG LOG: Standard signal condition check (all exchanges, all metrics)
         print(f"[SignalCheck] signal={signal_id} symbol={symbol} metric={metric} exchange={exchange} period={time_window} value={current_value:.6f} op={operator} thresh={threshold} met={condition_met}", flush=True)
 
-        return {
+        result = {
             "signal_id": signal_id,
             "signal_name": signal_def.get("signal_name"),
             "description": signal_def.get("description"),
@@ -436,6 +436,12 @@ class SignalDetectionService:
             "time_window": time_window,
             "exchange": exchange,
         }
+
+        # Enrich factor metrics with effectiveness data (IC/ICIR/win_rate/decay)
+        if metric.startswith("factor:") and condition_met:
+            self._enrich_factor_effectiveness(result, metric, symbol, exchange)
+
+        return result
 
     def _check_signal_trigger(
         self, signal_id: int, signal_def: dict, symbol: str, market_data: Dict[str, Any]
@@ -645,6 +651,36 @@ class SignalDetectionService:
         except Exception as e:
             logger.error(f"Error computing factor metric {factor_name} for {symbol}: {e}")
             return None
+
+    def _enrich_factor_effectiveness(
+        self, result: dict, metric: str, symbol: str, exchange: str
+    ) -> None:
+        """Enrich a factor signal result with effectiveness data from DB."""
+        factor_name = metric.split(":", 1)[1]
+        try:
+            from database.connection import SessionLocal
+            from sqlalchemy import text as sa_text
+
+            db = SessionLocal()
+            try:
+                row = db.execute(sa_text(
+                    "SELECT ic_mean, icir, win_rate, decay_half_life "
+                    "FROM factor_effectiveness "
+                    "WHERE factor_name = :fn AND symbol = :sym AND exchange = :ex "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ), {"fn": factor_name, "sym": symbol, "ex": exchange}).fetchone()
+
+                if row:
+                    result["factor_effectiveness"] = {
+                        "ic": round(float(row[0]), 4) if row[0] is not None else None,
+                        "icir": round(float(row[1]), 2) if row[1] is not None else None,
+                        "win_rate": round(float(row[2]), 2) if row[2] is not None else None,
+                        "decay_half_life_hours": int(row[3]) if row[3] is not None else None,
+                    }
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Error enriching factor effectiveness for {factor_name}/{symbol}: {e}")
 
     def _get_funding_current_rate(self, symbol: str, time_window, exchange: str = "hyperliquid") -> Optional[float]:
         """Get current funding rate in bps for context."""

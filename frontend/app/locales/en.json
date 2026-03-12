@@ -1693,7 +1693,7 @@
     "latestValue": "Latest Value",
     "saveToLibrary": "Save to Library",
     "factorName": "Factor Name",
-    "factorNamePlaceholder": "e.g. EMA Ratio 7/21",
+    "factorNamePlaceholder": "e.g. EMA_ratio_7_21 (letters, digits, underscores only)",
     "description": "Description",
     "descriptionPlaceholder": "Optional description",
     "saving": "Saving...",

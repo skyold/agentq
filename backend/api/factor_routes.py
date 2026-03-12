@@ -374,6 +374,11 @@ async def list_custom_factors(db: Session = Depends(get_db)):
 @router.post("/custom")
 async def create_custom_factor(req: CustomFactorRequest, db: Session = Depends(get_db)):
     """Save a custom factor expression."""
+    import re
+    # Validate factor name: English letters, digits, underscores only
+    if not re.match(r'^[A-Za-z][A-Za-z0-9_]*$', req.name):
+        return {"status": "error", "error": "Factor name must start with a letter and contain only English letters, digits, and underscores (e.g., RSI_fast, momentum_v2)"}
+
     # Validate expression syntax
     ok, err = factor_expression_engine.validate(req.expression)
     if not ok:
