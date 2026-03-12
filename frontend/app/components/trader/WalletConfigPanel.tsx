@@ -16,7 +16,8 @@ import {
   testWalletConnection,
   deleteAccountWallet,
 } from '@/lib/hyperliquidApi'
-import { approveBuilder, type UnauthorizedAccount } from '@/lib/api'
+import { type UnauthorizedAccount } from '@/lib/api'
+import { checkBuilderFeeAuthorized, approveBuilderFee } from '@/lib/hyperliquidWalletSetup'
 import { copyToClipboard } from '@/lib/utils'
 import { AuthorizationModal } from '@/components/hyperliquid'
 import { useTranslation } from 'react-i18next'
@@ -234,35 +235,22 @@ export default function WalletConfigPanel({
 
       if (result.success && result.connection === 'successful') {
         toast.success(`✅ ${environment === 'testnet' ? 'Testnet' : 'Mainnet'} connection successful! Balance: $${result.accountState?.totalEquity.toFixed(2)}`)
-        // Builder binding for mainnet wallet after successful connection
-        if (environment === 'mainnet' && result.walletAddress) {
+        // Builder fee check for mainnet wallet after successful connection
+        if (environment === 'mainnet') {
           try {
-            const authResult = await approveBuilder(accountId)
-            // Check if binding failed
-            if (!authResult.success || authResult.result?.status === 'err') {
-              // Show authorization modal for user to retry manually
-              setUnauthorizedAccounts([{
-                account_id: accountId,
-                account_name: accountName,
-                wallet_address: result.walletAddress,
-                max_fee: 0,
-                required_fee: 30
-              }])
-              setAuthModalOpen(true)
+            const ethereum = (window as any).ethereum
+            if (ethereum) {
+              const accts: string[] = await ethereum.request({ method: 'eth_accounts' })
+              if (accts && accts.length > 0) {
+                const masterAddr = accts[0]
+                const authorized = await checkBuilderFeeAuthorized(masterAddr, 'mainnet')
+                if (!authorized) {
+                  await approveBuilderFee(masterAddr, 'mainnet')
+                }
+              }
             }
           } catch (err) {
-            console.error(`Builder binding failed for account ${accountId}:`, err)
-            // Show modal on exception as well
-            if (result.walletAddress) {
-              setUnauthorizedAccounts([{
-                account_id: accountId,
-                account_name: accountName,
-                wallet_address: result.walletAddress,
-                max_fee: 0,
-                required_fee: 30
-              }])
-              setAuthModalOpen(true)
-            }
+            console.error('Builder fee authorization failed:', err)
           }
         }
       } else {

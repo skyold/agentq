@@ -464,7 +464,8 @@ export async function deleteAccountWallet(
 }
 
 export async function testWalletConnection(
-  accountId: number
+  accountId: number,
+  environment?: 'testnet' | 'mainnet'
 ): Promise<{
   success: boolean;
   accountId: number;
@@ -483,6 +484,8 @@ export async function testWalletConnection(
     `${HYPERLIQUID_API_BASE}/accounts/${accountId}/wallet/test`,
     {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ environment: environment || null }),
     }
   );
   return response.json();

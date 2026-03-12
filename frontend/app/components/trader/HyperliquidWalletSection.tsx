@@ -158,9 +158,10 @@ export default function HyperliquidWalletSection({
     const setTesting = environment === 'testnet' ? setTestingTestnet : setTestingMainnet
     try {
       setTesting(true)
-      const result = await testWalletConnection(accountId)
+      const result = await testWalletConnection(accountId, environment)
       if (result.success && result.connection === 'successful') {
         toast.success(t('wallet.test.success', 'Connection successful! Balance: ${{balance}}', { balance: result.accountState?.totalEquity.toFixed(2) }))
+        await loadWalletInfo()
       } else {
         toast.error(t('wallet.test.failed', 'Connection failed: {{error}}', { error: result.error || 'Unknown error' }))
       }

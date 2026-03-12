@@ -85,6 +85,10 @@ def _clear_cached_tpsl(wallet_address: str, symbol: str) -> None:
         logger.info(f"[TPSL CACHE] Cleared cache for {symbol}")
 
 
+# Valid account modes returned by Hyperliquid userAbstraction API
+UNIFIED_ACCOUNT_MODES = ("unifiedAccount", "portfolioMargin")
+
+
 class EnvironmentMismatchError(Exception):
     """Raised when account environment doesn't match client environment"""
     pass
@@ -125,9 +129,6 @@ class HyperliquidTradingClient:
         if not private_key.startswith('0x'):
             private_key = '0x' + private_key
         self.private_key = private_key
-
-        import sys
-        print(f"[DEBUG __init__] account_id={account_id}, environment={environment}, wallet_address={wallet_address}, key_type={key_type}", file=sys.stderr, flush=True)
 
         # Derive wallet address from private key if not provided
         if not wallet_address:
@@ -389,6 +390,59 @@ class HyperliquidTradingClient:
 
         return True
 
+    def _detect_account_mode(self) -> str:
+        """
+        Detect Hyperliquid account mode via the userAbstraction API.
+
+        Calls POST /info {"type": "userAbstraction", "user": query_address}.
+        Returns "unifiedAccount", "portfolioMargin", or "disabled" (standard).
+
+        No caching — this is called once per get_account_state() invocation.
+        The API is lightweight and the result can change at any time.
+
+        Returns:
+            "unifiedAccount", "portfolioMargin", or "standard"
+        """
+        try:
+            resp = requests.post(
+                f"{self.api_url}/info",
+                json={"type": "userAbstraction", "user": self.query_address},
+                timeout=5,
+            )
+            resp.raise_for_status()
+            mode = resp.json()
+            # API returns a plain string: "unifiedAccount", "disabled", or "portfolioMargin"
+            if isinstance(mode, str) and mode in UNIFIED_ACCOUNT_MODES:
+                return mode
+            return "standard"
+        except Exception as e:
+            print(f"[ACCOUNT MODE] userAbstraction API failed for {self.query_address}: {e}", flush=True)
+            return "standard"
+
+    def _get_spot_balance(self) -> Dict[str, float]:
+        """
+        Get balance from spotClearinghouseState for unified account mode.
+
+        Returns:
+            Dict with total_equity, available_balance, used_margin
+        """
+        spot_state = self.sdk_info.spot_user_state(self.query_address)
+        balances = spot_state.get("balances", [])
+
+        usdc_total = 0.0
+        usdc_hold = 0.0
+        for bal in balances:
+            if bal.get("coin") == "USDC":
+                usdc_total = float(bal.get("total", 0) or 0)
+                usdc_hold = float(bal.get("hold", 0) or 0)
+                break
+
+        return {
+            "total_equity": usdc_total,
+            "available_balance": usdc_total - usdc_hold,
+            "used_margin": usdc_hold,
+        }
+
     def get_account_state(self, db: Session) -> Dict[str, Any]:
         """
         Get current account state from Hyperliquid
@@ -417,13 +471,37 @@ class HyperliquidTradingClient:
         try:
             logger.info(f"Fetching account state for account {self.account_id} on {self.environment}")
 
-            # Use SDK Info.user_state for balance (avoids CCXT spot market loading issues)
+            # Use SDK Info.user_state for perp state (positions, maintenance margin)
             user_state = self.sdk_info.user_state(self.query_address)
             margin_summary = user_state.get('crossMarginSummary') or user_state.get('marginSummary', {})
 
             total_equity = float(margin_summary.get('accountValue', 0) or 0)
             used_margin = float(margin_summary.get('totalMarginUsed', 0) or 0)
             available_balance = float(user_state.get('withdrawable', 0) or 0)
+
+            # Detect account mode via userAbstraction API
+            account_mode = self._detect_account_mode()
+            if account_mode in UNIFIED_ACCOUNT_MODES:
+                # In Unified/Portfolio mode, clearinghouseState returns 0 for balance fields.
+                # Real balance lives in spotClearinghouseState.
+                try:
+                    spot_balance = self._get_spot_balance()
+                    total_equity = spot_balance["total_equity"]
+                    available_balance = spot_balance["available_balance"]
+                    used_margin = spot_balance["used_margin"]
+                    print(
+                        f"[UNIFIED ACCOUNT] account {self.account_id}: "
+                        f"equity=${total_equity:.2f}, available=${available_balance:.2f}, "
+                        f"hold=${used_margin:.2f}",
+                        flush=True
+                    )
+                except Exception as spot_err:
+                    # Fallback: if spot query fails, use perp state (may be 0)
+                    print(
+                        f"[UNIFIED ACCOUNT] Failed to get spot balance for account "
+                        f"{self.account_id}, falling back to perp state: {spot_err}",
+                        flush=True
+                    )
 
             # Calculate margin usage percentage (round to 2 decimal places)
             margin_usage_percent = round((used_margin / total_equity * 100), 2) if total_equity > 0 else 0
@@ -438,6 +516,7 @@ class HyperliquidTradingClient:
                 'margin_usage_percent': margin_usage_percent,
                 'withdrawal_available': round(available_balance, 2),
                 'wallet_address': self.wallet_address,
+                'account_mode': account_mode,
                 'timestamp': int(time.time() * 1000)
             }
 
@@ -2207,7 +2286,7 @@ class HyperliquidTradingClient:
 
     def test_connection(self, db: Session) -> Dict[str, Any]:
         """
-        Test API connection and authentication
+        Test API connection and authentication.
 
         Args:
             db: Database session
@@ -2226,6 +2305,8 @@ class HyperliquidTradingClient:
                 'address': self.wallet_address,
                 'account_id': self.account_id,
                 'balance': account_state.get('available_balance'),
+                'total_equity': account_state.get('total_equity'),
+                'account_mode': account_state.get('account_mode', 'standard'),
                 'api_url': self.api_url
             }
         except Exception as e:

@@ -274,7 +274,7 @@ export async function checkBuilderFeeAuthorized(
 /**
  * Sign and submit ApproveBuilderFee action via browser wallet
  */
-async function approveBuilderFee(
+export async function approveBuilderFee(
   masterAddress: string,
   env: 'testnet' | 'mainnet'
 ): Promise<void> {

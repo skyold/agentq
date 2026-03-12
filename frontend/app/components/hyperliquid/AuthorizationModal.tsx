@@ -3,11 +3,13 @@ import { createPortal } from 'react-dom'
 import { X, CheckCircle, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
-  approveBuilder,
-  checkBuilderAuthorization,
   disableTrading,
   UnauthorizedAccount
 } from '@/lib/api'
+import {
+  checkBuilderFeeAuthorized,
+  approveBuilderFee,
+} from '@/lib/hyperliquidWalletSetup'
 
 interface AuthorizationModalProps {
   isOpen: boolean
@@ -53,29 +55,39 @@ export default function AuthorizationModal({
   const handleAuthorize = async (account: UnauthorizedAccount) => {
     updateAccountState(account.account_id, { authorizing: true, error: undefined })
     try {
-      // Step 1: Call approve builder API
-      const authResult = await approveBuilder(account.account_id)
-
-      // Check if authorization failed
-      if (!authResult.success || authResult.result?.status === 'err') {
+      // Get master address from browser wallet
+      const ethereum = (window as any).ethereum
+      if (!ethereum) {
         updateAccountState(account.account_id, {
           authorizing: false,
-          error: authResult.message || 'Authorization failed'
+          error: 'No browser wallet detected. Please install MetaMask or Rabby.'
         })
         return
       }
 
-      // Step 2: Verify authorization (only if approve succeeded)
-      const result = await checkBuilderAuthorization(account.wallet_address)
-      if (result.authorized) {
+      const accounts: string[] = await ethereum.request({ method: 'eth_accounts' })
+      if (!accounts || accounts.length === 0) {
+        updateAccountState(account.account_id, {
+          authorizing: false,
+          error: 'No account selected in wallet. Please unlock your wallet and try again.'
+        })
+        return
+      }
+
+      const masterAddress = accounts[0]
+
+      // Sign ApproveBuilderFee via browser wallet
+      await approveBuilderFee(masterAddress, 'mainnet')
+
+      // Verify authorization
+      const authorized = await checkBuilderFeeAuthorized(masterAddress, 'mainnet')
+      if (authorized) {
         updateAccountState(account.account_id, { authorizing: false, authorized: true })
 
-        // Check if all accounts are now authorized
         const allAuthorized = unauthorizedAccounts.every(acc =>
           acc.account_id === account.account_id || getAccountState(acc.account_id).authorized
         )
         if (allAuthorized) {
-          // Auto-close modal after short delay to show success state
           setTimeout(() => {
             onAuthorizationComplete()
           }, 500)

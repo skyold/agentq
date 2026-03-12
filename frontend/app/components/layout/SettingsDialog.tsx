@@ -15,8 +15,6 @@ import {
   createAccount as createAccount,
   updateAccount as updateAccount,
   testLLMConnection,
-  checkBuilderAuthorization,
-  approveBuilder,
   exportTraderData,
   type TradingAccount,
   type TradingAccountCreate,
@@ -24,6 +22,10 @@ import {
   type UnauthorizedAccount,
   type TraderExportData
 } from '@/lib/api'
+import {
+  checkBuilderFeeAuthorized,
+  approveBuilderFee,
+} from '@/lib/hyperliquidWalletSetup'
 import ExchangeWalletsPanel from '@/components/trader/ExchangeWalletsPanel'
 import { AuthorizationModal } from '@/components/hyperliquid'
 import TraderDataImportDialog from '@/components/trader/TraderDataImportDialog'
@@ -276,41 +278,37 @@ export default function SettingsDialog({ open, onOpenChange, onAccountUpdated, e
     try {
       setToggleLoadingId(account.id)
 
-      // If enabling trading and account has mainnet wallet, check authorization first
-      if (nextValue && account.has_mainnet_wallet && account.wallet_address) {
-        const authStatus = await checkBuilderAuthorization(account.wallet_address)
-        if (!authStatus.authorized) {
-          // Builder binding - try to bind builder
-          try {
-            const authResult = await approveBuilder(account.id)
-            // Check if binding failed
-            if (!authResult.success || authResult.result?.status === 'err') {
-              // Show authorization modal for user to retry manually
-              setUnauthorizedAccounts([{
-                account_id: account.id,
-                account_name: account.name,
-                wallet_address: account.wallet_address,
-                max_fee: authStatus.max_fee,
-                required_fee: authStatus.required_fee
-              }])
-              setAuthModalOpen(true)
-              setToggleLoadingId(null)
-              return  // Don't enable trading if binding failed
-            }
-          } catch (err) {
-            console.error(`Builder binding failed for account ${account.id}:`, err)
-            // Show modal on exception as well
-            setUnauthorizedAccounts([{
-              account_id: account.id,
-              account_name: account.name,
-              wallet_address: account.wallet_address,
-              max_fee: authStatus.max_fee,
-              required_fee: authStatus.required_fee
-            }])
-            setAuthModalOpen(true)
+      // If enabling trading and account has mainnet wallet, check builder fee via browser wallet
+      if (nextValue && account.has_mainnet_wallet) {
+        try {
+          const ethereum = (window as any).ethereum
+          if (!ethereum) {
+            toast.error(t('wallet.error.noWallet', 'No browser wallet detected. Please install MetaMask or Rabby.'))
             setToggleLoadingId(null)
             return
           }
+
+          const accounts: string[] = await ethereum.request({ method: 'eth_accounts' })
+          if (!accounts || accounts.length === 0) {
+            toast.error(t('wallet.error.noAccount', 'No account selected in wallet. Please unlock your wallet and try again.'))
+            setToggleLoadingId(null)
+            return
+          }
+
+          const masterAddress = accounts[0]
+          const authorized = await checkBuilderFeeAuthorized(masterAddress, 'mainnet')
+          if (!authorized) {
+            toast.loading(t('wallet.builder.signing', 'Please approve trading authorization in your wallet...'), { id: 'builder-auth' })
+            await approveBuilderFee(masterAddress, 'mainnet')
+            toast.dismiss('builder-auth')
+            toast.success(t('wallet.builder.success', 'Trading authorization approved!'))
+          }
+        } catch (err: any) {
+          toast.dismiss('builder-auth')
+          console.error('Builder fee authorization failed:', err)
+          toast.error(t('wallet.builder.failed', 'Authorization failed. You must complete trading authorization to start trading.'))
+          setToggleLoadingId(null)
+          return
         }
       }
 

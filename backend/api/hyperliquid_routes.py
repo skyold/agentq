@@ -1130,39 +1130,45 @@ async def delete_account_wallet(
         raise HTTPException(status_code=500, detail=f"Failed to delete wallet: {str(e)}")
 
 
+class TestWalletRequest(BaseModel):
+    environment: Optional[str] = None
+
+
 @router.post("/accounts/{account_id}/wallet/test")
 async def test_wallet_connection(
     account_id: int,
+    body: TestWalletRequest = TestWalletRequest(),
     db: Session = Depends(get_db)
 ):
     """
     Test wallet connection to Hyperliquid
 
     Validates that the wallet can connect to the exchange and fetch account state.
-    Uses global trading_mode to determine which network to test.
+    Uses the provided environment, or falls back to global trading_mode.
     """
     from database.models import Account
-    from services.hyperliquid_environment import get_global_trading_mode
 
     try:
-        # Check if account exists
         account = db.query(Account).filter(Account.id == account_id, Account.is_deleted != True).first()
         if not account:
             raise HTTPException(status_code=404, detail=f"Account {account_id} not found")
 
-        # Get global trading mode
-        trading_mode = get_global_trading_mode(db)
+        env = body.environment
+        if env and env not in ("testnet", "mainnet"):
+            raise HTTPException(status_code=400, detail="environment must be 'testnet' or 'mainnet'")
+        if not env:
+            from services.hyperliquid_environment import get_global_trading_mode
+            env = get_global_trading_mode(db)
 
-        # Try to get client and fetch account state
         try:
-            client = get_hyperliquid_client(db, account_id)
+            client = get_hyperliquid_client(db, account_id, override_environment=env)
             account_state = client.get_account_state(db)
 
             return {
                 'success': True,
                 'accountId': account_id,
                 'accountName': account.name,
-                'environment': trading_mode,
+                'environment': env,
                 'walletAddress': client.wallet_address,
                 'connection': 'successful',
                 'accountState': {
@@ -1173,15 +1179,13 @@ async def test_wallet_connection(
             }
 
         except ValueError as e:
-            # Wallet not configured
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            # Connection or API error
             return {
                 'success': False,
                 'accountId': account_id,
                 'accountName': account.name,
-                'environment': trading_mode,
+                'environment': env,
                 'connection': 'failed',
                 'error': str(e)
             }
