@@ -2,9 +2,9 @@
 
 **English** | [简体中文](./README.zh-CN.md)
 
-> **Multi-exchange AI trading platform with market flow signal monitoring**. Supports **Hyperliquid** and **Binance Futures**. Monitors institutional order flow, OI changes, and funding rate extremes—triggers automated trading when market structure shifts. Two trading modes: AI Trader for strategies needing market understanding (news, sentiment), or Program Trader for fixed-rule strategies (technical indicators). AI-assisted configuration throughout—no coding required to start.
+> **Multi-exchange AI trading platform with quantitative factor intelligence and market flow signal monitoring**. Supports **Hyperliquid** and **Binance Futures**. AI discovers, validates, and trades on quantitative factors — the same building blocks used by institutional quant desks. Monitors institutional order flow, OI changes, and funding rate extremes — triggers automated trading when market structure shifts. Two trading modes: AI Trader for strategies needing market understanding, or Program Trader for fixed-rule strategies. AI-assisted configuration throughout — no coding required to start.
 >
-> **Essential tool for crypto perpetual traders**. One-click Docker deployment, frequent updates. Supports Hyperliquid testnet paper trading & mainnet real trading, plus Binance Futures. **English & 中文 supported.**
+> **Essential tool for crypto perpetual traders**. 86 built-in factors, custom expression engine, AI-driven factor mining with web research. One-click Docker deployment, frequent updates. Supports Hyperliquid testnet paper trading & mainnet real trading, plus Binance Futures. **English & 中文 supported.**
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Hyperliquid](https://img.shields.io/badge/Hyperliquid-Supported-00D395?style=flat&logo=data:image/svg%2bxml;base64,PHN2ZyB3aWR0aD0iMTQ0IiBoZWlnaHQ9IjE0NCIgdmlld0JveD0iMCAwIDE0NCAxNDQiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPHBhdGggZD0iTTE0NCA3MS42OTkxQzE0NCAxMTkuMzA2IDExNC44NjYgMTM0LjU4MiA5OS41MTU2IDEyMC45OEM4Ni44ODA0IDEwOS44ODkgODMuMTIxMSA4Ni40NTIxIDY0LjExNiA4NC4wNDU2QzM5Ljk5NDIgODEuMDExMyAzNy45MDU3IDExMy4xMzMgMjIuMDMzNCAxMTMuMTMzQzMuNTUwNCAxMTMuMTMzIDAgODYuMjQyOCAwIDcyLjQzMTVDMCA1OC4zMDYzIDMuOTY4MDkgMzkuMDU0MiAxOS43MzYgMzkuMDU0MkMzOC4xMTQ2IDM5LjA1NDIgMzkuMTU4OCA2Ni41NzIyIDYyLjEzMiA2NS4xMDczQzg1LjAwMDcgNjMuNTM3OSA4NS40MTg0IDM0Ljg2ODkgMTAwLjI0NyAyMi42MjcxQzExMy4xOTUgMTIuMDU5MyAxNDQgMjMuNDY0MSAxNDQgNzEuNjk5MVoiIGZpbGw9IndoaXRlIi8+Cjwvc3ZnPgo=)](https://hyperliquid.xyz)
@@ -25,7 +25,7 @@ Hyper Alpha Arena is a production-ready AI trading platform where Large Language
 | Who you are | What you get |
 |-------------|--------------|
 | **Non-technical traders** | Built-in AI assistants help you create trading signals and strategy prompts through natural conversation—no coding required |
-| **Quantitative researchers** | Test LLM-driven strategies with real market data on testnet before deploying real capital |
+| **Quantitative researchers** | 86 built-in factors with IC/ICIR effectiveness scoring, custom expression engine with 69 functions, AI-driven factor mining — test strategies on testnet before deploying real capital |
 | **Hyperliquid users** | Native integration with both testnet (free paper trading) and mainnet (1-50x leverage perpetuals) |
 | **Binance users** | Connect via API key to trade USDT-M futures with full feature support |
 | **AI enthusiasts** | Experiment with different LLMs (GPT, Claude, Deepseek) competing in real trading scenarios |
@@ -44,11 +44,13 @@ Hyper Alpha Arena is a production-ready AI trading platform where Large Language
 | **AI Trader** | Strategies needing market understanding (news, sentiment, complex judgment) | Describe strategy in natural language, AI analyzes and decides in real-time |
 | **Program Trader** | Fixed-rule strategies (technical indicators, price levels) | Define rules in Python code, backtest on historical data, millisecond execution |
 
-**Market Flow Signal Monitoring** - No need to watch charts 24/7. Automatically triggers when big money moves. Monitors order flow imbalance, open interest surges, funding rate extremes—activates trading only when market structure changes.
+**Factor Intelligence** - AI that builds its own alpha. 86 built-in factors across Momentum, Trend, Volatility, Volume, and Microstructure categories — each scored with institutional-grade metrics (IC, ICIR, win rate, decay half-life). A custom expression engine with 69 functions lets you create your own factors. Hyper AI can search the web for the latest quantitative research, extract factor ideas from academic papers, then validate them against your live data — measuring predictive power and building strategies around the ones that actually work. Use any factor as a signal trigger, inject factor data into AI Trader prompts, or access it programmatically in Program Trader.
+
+**Market Flow Signal Monitoring** - No need to watch charts 24/7. Automatically triggers when big money moves. Monitors order flow imbalance, open interest surges, funding rate extremes — activates trading only when market structure changes. Any factor from the library can also be used as a trigger condition, with real percentile distributions (P5–P95) to help set precise thresholds.
 
 **AI-Assisted Configuration** - Can't write strategy prompts? Don't know how to set signal conditions? Conversational AI generators help you configure from scratch, no coding required.
 
-**Trade Attribution Analytics** - Don't know what's wrong with your strategy? Performance breakdown by symbol, trigger type, and time period. AI diagnosis identifies weaknesses and suggests optimizations.
+**Trade Attribution Analytics** - Don't know what's wrong with your strategy? Performance breakdown by symbol, trigger type, time period, and factor. The "By Factor" dimension shows which factor signals actually made money. AI diagnosis identifies weaknesses and suggests optimizations.
 
 **Multi-Account Real-Time Comparison** - Don't know which strategy works better? Real-time asset curve comparison across multiple AI traders, with trade markers displayed on individual curves.
 
@@ -64,7 +66,7 @@ What sets Hyper Alpha Arena apart is its multi-agent AI system. Instead of a sin
 
 | Agent | Role |
 |-------|------|
-| **Hyper AI** | Central coordinator with tool-use capabilities—queries market data, analyzes positions, and orchestrates other agents |
+| **Hyper AI** | Central coordinator with tool-use capabilities — queries market data, analyzes positions, mines and validates quantitative factors, searches the web for quant research, and orchestrates other agents |
 | **Signal AI** | Designs market flow signal conditions through conversation (CVD, OI, funding rate triggers) |
 | **Prompt AI** | Crafts and refines AI Trader strategy prompts with real-time variable preview |
 | **Program AI** | Writes, debugs, and backtests Python trading strategies for Program Trader |
@@ -93,6 +95,7 @@ Hyper AI comes with built-in Skills: modular, step-by-step workflow guides that 
 | `/diagnose` | Trader Diagnosis | Systematically diagnoses why a trader isn't triggering |
 | `/resource` | Resource Management | Helps reorganize strategies, rebind signal pools, manage traders |
 | `/health` | System Health Check | Full system status report with actionable recommendations |
+| `/factor` | Factor Mining | AI-guided factor discovery — survey market, generate hypotheses, validate with IC/ICIR, save to library |
 | `/memory` | Memory Management | View, update, or correct what the AI remembers about you |
 
 Each skill follows a checkpoint-based workflow—the AI pauses at key steps to confirm before proceeding. No need to memorize platform concepts or read documentation first.

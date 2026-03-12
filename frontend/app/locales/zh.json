@@ -168,7 +168,9 @@
     "systemLogs": "系统日志",
     "howToUse": "使用指南",
     "community": "用户社区",
-    "contactUs": "联系我们"
+    "contactUs": "联系我们",
+    "exchange": "交易所",
+    "tradingMode": "交易模式"
   },
   "contact": {
     "contactAuthor": "联系作者"
@@ -867,6 +869,23 @@
     "mode": "交易模式",
     "testMoney": "模拟资金",
     "realMoney": "真实资金 ⚠️"
+  },
+  "tradingMode": {
+    "switchToMainnet": "切换到主网",
+    "switchToTestnet": "切换到测试网",
+    "mainnetWarning": "即将切换到主网，所有交易将使用真实资金。",
+    "mainnetPoint1": "真实资金面临风险——亏损不可逆",
+    "mainnetPoint2": "上线前请确保策略已经过充分测试",
+    "mainnetPoint3": "信号和资金流数据采集自主网",
+    "testnetInfo": "测试网仅用于熟悉交易流程。",
+    "testnetPoint1": "价格和交易量与主网不同步",
+    "testnetPoint2": "信号和资金流数据仅采集自主网",
+    "testnetPoint3": "测试网的策略结果不代表主网表现",
+    "testnetPoint4": "先用测试网熟悉平台，然后小资金切换到主网",
+    "confirmMainnet": "切换到主网",
+    "confirmTestnet": "切换到测试网",
+    "testnetDesc": "使用模拟资金练习。价格和交易量与主网不同步，无真实资金风险。",
+    "mainnetDesc": "真实资金交易。信号和资金流数据在此采集，亏损不可逆。"
   },
   "wallet": {
     "hyperliquidWallets": "Hyperliquid钱包",

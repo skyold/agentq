@@ -81,7 +81,7 @@ interface Trade { id: number; order_id: number; account_id: number; symbol: stri
 
 const PAGE_TITLES: Record<string, string> = {
   'hyper-ai': 'Hyper AI',
-  comprehensive: 'Hyper Alpha Arena',
+  comprehensive: 'Dashboard',
   'system-logs': 'System Logs',
   'prompt-management': 'Prompt Templates',
   'program-trader': 'Programs',

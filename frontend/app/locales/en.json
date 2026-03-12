@@ -165,7 +165,9 @@
     "systemLogs": "System Logs",
     "howToUse": "How to Use",
     "community": "Community",
-    "contactUs": "Contact Us"
+    "contactUs": "Contact Us",
+    "exchange": "Exchange",
+    "tradingMode": "Trading Mode"
   },
   "contact": {
     "contactAuthor": "Contact Author"
@@ -847,6 +849,23 @@
     "mode": "Mode",
     "testMoney": "Test Money",
     "realMoney": "Real Money ⚠️"
+  },
+  "tradingMode": {
+    "switchToMainnet": "Switch to Mainnet",
+    "switchToTestnet": "Switch to Testnet",
+    "mainnetWarning": "You are about to switch to Mainnet. All trades will use real money.",
+    "mainnetPoint1": "Real funds at risk — losses are permanent",
+    "mainnetPoint2": "Ensure your strategy has been tested before going live",
+    "mainnetPoint3": "Signal and market flow data is collected from Mainnet",
+    "testnetInfo": "Testnet is for familiarizing with the trading process only.",
+    "testnetPoint1": "Prices and volume differ from Mainnet — not synchronized",
+    "testnetPoint2": "Signal and market flow data is only collected from Mainnet",
+    "testnetPoint3": "Strategy results on Testnet do not represent Mainnet performance",
+    "testnetPoint4": "Use Testnet to learn the platform, then switch to Mainnet with small capital",
+    "confirmMainnet": "Switch to Mainnet",
+    "confirmTestnet": "Switch to Testnet",
+    "testnetDesc": "Practice with test funds. Prices and volume differ from Mainnet. No real money at risk.",
+    "mainnetDesc": "Real money trading. Signal and market flow data is collected here. Losses are permanent."
   },
   "wallet": {
     "hyperliquidWallets": "Hyperliquid Wallets",

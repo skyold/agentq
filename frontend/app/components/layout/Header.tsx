@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { User, LogOut, UserCog, ExternalLink, ChevronDown } from 'lucide-react'
+import { useEffect } from 'react'
+import { User, LogOut, UserCog, ExternalLink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import {
@@ -11,9 +11,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import TradingModeSwitcher from '@/components/trading/TradingModeSwitcher'
-import ExchangeModal from '@/components/exchange/ExchangeModal'
-import ExchangeIcon from '@/components/exchange/ExchangeIcon'
 import { useAuth } from '@/contexts/AuthContext'
 import { useCurrentExchangeInfo } from '@/contexts/ExchangeContext'
 import { getSignInUrl } from '@/lib/auth'
@@ -38,7 +35,6 @@ export default function Header({ title = 'Hyper Alpha Arena', currentAccount, sh
   const { t } = useTranslation()
   const { user, loading, authEnabled, membership, logout } = useAuth()
   const currentExchangeInfo = useCurrentExchangeInfo()
-  const [isExchangeModalOpen, setIsExchangeModalOpen] = useState(false)
   const isVipMember = membership?.status === 'ACTIVE'
 
   // Preload VIP icons so dropdown renders instantly
@@ -75,27 +71,8 @@ export default function Header({ title = 'Hyper Alpha Arena', currentAccount, sh
     <header className="w-full border-b bg-background/50 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="w-full py-2 px-3 md:px-4 flex items-center justify-between">
         <div className="flex items-center gap-2 md:gap-3">
-          <img src="/static/logo_app.png" alt="Logo" className="h-7 w-7 md:h-8 md:w-8 object-contain" />
           <h1 className="text-base md:text-xl font-bold truncate">{title}</h1>
 
-          {/* Exchanges Button - Hidden on mobile */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setIsExchangeModalOpen(true)}
-            className="hidden md:flex items-center px-2 py-1.5 text-sm font-medium gap-2"
-          >
-            {t('header.supported', 'Supported')}
-            <div className="flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-slate-800/80">
-              <ExchangeIcon exchangeId="hyperliquid" size={14} />
-              <span className="text-[10px] font-medium text-slate-200">Hyperliquid</span>
-            </div>
-            <div className="flex items-center gap-1.5 px-1.5 py-0.5 rounded bg-slate-800/80">
-              <ExchangeIcon exchangeId="binance" size={14} />
-              <span className="text-[10px] font-medium text-slate-200">Binance</span>
-            </div>
-            <ChevronDown className="h-3 w-3" />
-          </Button>
           {currentExchangeInfo.id === 'hyperliquid' && !isVipMember && (
             <span className="hidden md:inline text-xs text-muted-foreground ml-2">{t('header.premiumDiscount', 'Subscribe to Premium for service fee 50% off.')}</span>
           )}
@@ -103,9 +80,6 @@ export default function Header({ title = 'Hyper Alpha Arena', currentAccount, sh
 
         {/* Right side controls - Hidden on mobile */}
         <div className="hidden md:flex items-center gap-3">
-
-          <TradingModeSwitcher />
-
           {authEnabled && (
             <>
               {loading ? (
@@ -190,11 +164,6 @@ export default function Header({ title = 'Hyper Alpha Arena', currentAccount, sh
         </div>
       </div>
 
-      {/* Exchange Modal */}
-      <ExchangeModal
-        isOpen={isExchangeModalOpen}
-        onClose={() => setIsExchangeModalOpen(false)}
-      />
     </header>
   )
 }
