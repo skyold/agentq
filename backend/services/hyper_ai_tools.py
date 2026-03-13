@@ -629,7 +629,8 @@ HYPER_AI_TOOLS = [
                     "exchange": {"type": "string", "enum": ["hyperliquid", "binance"], "description": "Exchange (required)"},
                     "symbol": {"type": "string", "description": "Trading symbol (e.g., BTC). If omitted, returns factor library list."},
                     "factor_name": {"type": "string", "description": "Specific factor name for detailed info + history"},
-                    "forward_period": {"type": "string", "enum": ["1h", "4h", "12h", "24h"], "description": "Forward period for effectiveness (default: 4h)"}
+                    "forward_period": {"type": "string", "enum": ["1h", "4h", "12h", "24h"], "description": "Forward period for effectiveness (default: 4h)"},
+                    "days": {"type": "integer", "description": "Number of days of history to return when querying a specific factor (default: 30, max: 365). Use larger values for long-term trend analysis."}
                 },
                 "required": ["exchange"]
             }
@@ -2408,7 +2409,8 @@ def execute_save_memory(
 
 def execute_query_factors(
     db: Session, exchange: str, symbol: str = None,
-    factor_name: str = None, forward_period: str = "4h"
+    factor_name: str = None, forward_period: str = "4h",
+    days: int = 30
 ) -> str:
     """Query factor library, values, and effectiveness."""
     from services.factor_registry import FACTOR_REGISTRY, CATEGORY_LABELS
@@ -2432,13 +2434,17 @@ def execute_query_factors(
                 ORDER BY timestamp DESC LIMIT 1
             """), {"fn": factor_name, "sym": symbol, "ex": exchange}).fetchone()
 
+            from datetime import date as _d, timedelta as _td
+            history_cutoff = _d.today() - _td(days=min(days, 365))
             history = db.execute(text("""
                 SELECT calc_date, ic_mean, icir, win_rate, sample_count
                 FROM factor_effectiveness
                 WHERE factor_name = :fn AND symbol = :sym AND period = '1h'
                     AND forward_period = :fp AND exchange = :ex
-                ORDER BY calc_date DESC LIMIT 14
-            """), {"fn": factor_name, "sym": symbol, "fp": forward_period, "ex": exchange}).fetchall()
+                    AND calc_date >= :cutoff
+                ORDER BY calc_date
+            """), {"fn": factor_name, "sym": symbol, "fp": forward_period,
+                   "ex": exchange, "cutoff": history_cutoff}).fetchall()
 
             return json.dumps({
                 "factor_name": factor_name,
@@ -3037,7 +3043,8 @@ def execute_hyper_ai_tool(
                 db, exchange=arguments.get("exchange", "hyperliquid"),
                 symbol=arguments.get("symbol"),
                 factor_name=arguments.get("factor_name"),
-                forward_period=arguments.get("forward_period", "4h")
+                forward_period=arguments.get("forward_period", "4h"),
+                days=arguments.get("days", 30)
             )
 
         elif tool_name == "evaluate_factor":

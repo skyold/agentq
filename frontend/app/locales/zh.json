@@ -1747,7 +1747,30 @@
     "deleteConfirm": "确定删除此自定义因子？",
     "noCustomFactors": "暂无自定义因子，使用上方实验室创建。",
     "syntaxError": "语法错误",
-    "evalError": "评估错误"
+    "evalError": "评估错误",
+    "analysis": {
+      "title": "因子分析",
+      "icTimeSeries": "IC 时间序列",
+      "cumulativeIc": "累计 IC",
+      "cumulativeIcHint": "持续上升 = 因子稳定有效；走平或下降 = 因子正在失效。",
+      "icByWindow": "IC × 预测窗口",
+      "icByWindowHint": "展示该因子在不同预测时间尺度上的表现。柱子越高 = 该窗口下预测力越强。",
+      "askAi": "AI 解读",
+      "aiPrompt": "分析因子「{{factor}}」在 {{symbol}} 上的表现（{{fp}} 预测窗口）。查询它的有效性历史数据，评估当前状态，给我可操作的建议：现在值得使用吗？哪个预测窗口最合适？",
+      "verdict_strong": "有效 — 预测力强",
+      "verdict_moderate": "一般 — 有一定预测力",
+      "verdict_weak": "较弱 — 预测力有限",
+      "verdict_ineffective": "无效 — 无显著预测能力",
+      "detail_insufficient_data": "数据不足",
+      "detail_strong_ic": "IC 较强（≥0.05）",
+      "detail_moderate_ic": "IC 一般",
+      "detail_weak_ic": "IC 较弱（<0.02）",
+      "detail_high_winrate": "胜率 ≥55%",
+      "detail_neutral_winrate": "胜率中性",
+      "detail_low_winrate": "胜率 <45%",
+      "detail_cum_rising": "累计IC上升",
+      "detail_cum_declining": "累计IC下降"
+    }
   },
   "tools": {
     "setup": "配置",

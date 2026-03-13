@@ -199,6 +199,33 @@ async def get_effectiveness_history(
     }
 
 
+@router.get("/effectiveness/{factor_name}/by-window")
+async def get_effectiveness_by_window(
+    factor_name: str,
+    symbol: str = Query(...),
+    period: str = Query("1h"),
+    exchange: str = Query("hyperliquid"),
+    db: Session = Depends(get_db),
+):
+    """Return latest IC across all forward periods for bar chart visualization."""
+    rows = db.execute(text("""
+        SELECT DISTINCT ON (forward_period)
+            forward_period, ic_mean, icir, win_rate, sample_count
+        FROM factor_effectiveness
+        WHERE factor_name = :fn AND symbol = :sym AND period = :p AND exchange = :ex
+        ORDER BY forward_period, calc_date DESC
+    """), {"fn": factor_name, "sym": symbol, "p": period, "ex": exchange}).fetchall()
+
+    return {
+        "factor_name": factor_name,
+        "windows": [
+            {"forward_period": r[0], "ic_mean": r[1], "icir": r[2],
+             "win_rate": r[3], "sample_count": r[4]}
+            for r in rows
+        ],
+    }
+
+
 @router.get("/status")
 async def get_factor_status(db: Session = Depends(get_db)):
     """Return engine status with per-exchange last compute time."""

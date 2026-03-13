@@ -287,6 +287,21 @@ function App() {
       }
     }
   }, [])
+
+  // Listen for hash changes (e.g. from Factor Analysis "Ask AI" button)
+  useEffect(() => {
+    const onHashChange = () => {
+      const hash = window.location.hash.slice(1)
+      if (hash) {
+        const paramIdx = hash.indexOf('?')
+        const pageName = paramIdx !== -1 ? hash.slice(0, paramIdx) : hash
+        if (PAGE_TITLES[pageName]) setCurrentPage(pageName)
+      }
+    }
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
   const [accountRefreshTrigger, setAccountRefreshTrigger] = useState<number>(0)
   const wsRef = useRef<WebSocket | null>(null)
   const [accounts, setAccounts] = useState<any[]>([])

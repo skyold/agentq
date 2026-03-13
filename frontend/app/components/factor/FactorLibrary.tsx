@@ -10,7 +10,8 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { apiRequest, getHyperliquidWatchlist, getBinanceWatchlist } from '@/lib/api'
-import { RefreshCw, Info, CheckCircle2, ArrowUpDown, FlaskConical, Plus, Trash2, Pencil } from 'lucide-react'
+import { RefreshCw, Info, CheckCircle2, ArrowUpDown, FlaskConical, Plus, Trash2, Pencil, BarChart3 } from 'lucide-react'
+import FactorAnalysisDialog from './FactorAnalysisDialog'
 import ExchangeIcon from '@/components/exchange/ExchangeIcon'
 import PacmanLoader from '@/components/ui/pacman-loader'
 import type { ExchangeId } from '@/lib/types/exchange'
@@ -121,6 +122,10 @@ export default function FactorLibrary() {
   const [saveDesc, setSaveDesc] = useState('')
   const [saving, setSaving] = useState(false)
   const [customFactors, setCustomFactors] = useState<any[]>([])
+
+  // Factor Analysis Dialog state
+  const [analysisOpen, setAnalysisOpen] = useState(false)
+  const [analysisFactor, setAnalysisFactor] = useState<{ name: string; displayName: string }>({ name: '', displayName: '' })
 
   useEffect(() => {
     apiRequest('/factors/library').then(r => r.json()).then(setLibrary).catch(() => {})
@@ -755,7 +760,7 @@ export default function FactorLibrary() {
                   </Tooltip>
                 </TableHead>
                 <TableHead className="text-right">{t('factors.samples')}</TableHead>
-                <TableHead className="w-16"></TableHead>
+                <TableHead className="w-24"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -817,18 +822,24 @@ export default function FactorLibrary() {
                   </TableCell>
                   <TableCell className="text-right text-sm">{row.sample_count ?? '—'}</TableCell>
                   <TableCell className="text-right">
-                    {row._isCustom && (
-                      <div className="flex gap-0.5 justify-end">
-                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0"
-                          onClick={() => openLabDialog(row._customId)}>
-                          <Pencil className="h-3 w-3" />
-                        </Button>
-                        <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-500"
-                          onClick={() => handleDeleteCustom(row._customId)}>
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    )}
+                    <div className="flex gap-0.5 justify-end">
+                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" title={t('factors.analysis.title')}
+                        onClick={() => { setAnalysisFactor({ name: row._isCustom ? row.name : row.name, displayName: row._isCustom ? row.name : (isZh && row.display_name_zh ? row.display_name_zh : row.display_name) }); setAnalysisOpen(true) }}>
+                        <BarChart3 className="h-3 w-3" />
+                      </Button>
+                      {row._isCustom && (
+                        <>
+                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0"
+                            onClick={() => openLabDialog(row._customId)}>
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-6 w-6 p-0 text-red-500"
+                            onClick={() => handleDeleteCustom(row._customId)}>
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -836,6 +847,16 @@ export default function FactorLibrary() {
           </Table>
         </div>
       </div>
+      <FactorAnalysisDialog
+        open={analysisOpen}
+        onOpenChange={setAnalysisOpen}
+        factorName={analysisFactor.name}
+        displayName={analysisFactor.displayName}
+        symbol={symbol}
+        period={period}
+        exchange={exchange}
+        forwardPeriod={forwardPeriod}
+      />
     </TooltipProvider>
   )
 }

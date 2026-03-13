@@ -625,6 +625,17 @@ export default function HyperAiPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, streamingContent])
 
+  // Check for pending prompt from other pages (e.g. Factor Analysis "Ask AI")
+  useEffect(() => {
+    const pending = localStorage.getItem('hyper-ai-pending-prompt')
+    if (pending) {
+      localStorage.removeItem('hyper-ai-pending-prompt')
+      setInputValue(pending)
+      // Focus the textarea after a brief delay
+      setTimeout(() => textareaRef.current?.focus(), 200)
+    }
+  }, [])
+
   const fetchBotConfig = async () => {
     try {
       const res = await fetch('/api/bot/config/telegram')

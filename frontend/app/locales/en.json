@@ -1727,7 +1727,30 @@
     "deleteConfirm": "Delete this custom factor?",
     "noCustomFactors": "No custom factors yet. Use the lab above to create one.",
     "syntaxError": "Syntax Error",
-    "evalError": "Evaluation Error"
+    "evalError": "Evaluation Error",
+    "analysis": {
+      "title": "Factor Analysis",
+      "icTimeSeries": "IC Time Series",
+      "cumulativeIc": "Cumulative IC",
+      "cumulativeIcHint": "Steadily rising = consistently predictive. Flat or declining = factor losing effectiveness.",
+      "icByWindow": "IC by Prediction Window",
+      "icByWindowHint": "Shows which prediction horizon this factor works best for. Taller bar = stronger predictive power at that window.",
+      "askAi": "Ask AI",
+      "aiPrompt": "Analyze the factor \"{{factor}}\" for {{symbol}} ({{fp}} prediction window). Query its effectiveness history, evaluate its current status, and give me actionable advice: is it worth using now? What prediction window works best?",
+      "verdict_strong": "Effective — Strong predictive power",
+      "verdict_moderate": "Moderate — Some predictive power",
+      "verdict_weak": "Weak — Limited predictive power",
+      "verdict_ineffective": "Ineffective — No meaningful prediction",
+      "detail_insufficient_data": "Insufficient data",
+      "detail_strong_ic": "Strong IC (≥0.05)",
+      "detail_moderate_ic": "Moderate IC",
+      "detail_weak_ic": "Weak IC (<0.02)",
+      "detail_high_winrate": "Win rate ≥55%",
+      "detail_neutral_winrate": "Neutral win rate",
+      "detail_low_winrate": "Win rate <45%",
+      "detail_cum_rising": "Cumulative IC rising",
+      "detail_cum_declining": "Cumulative IC declining"
+    }
   },
   "tools": {
     "setup": "Setup",
