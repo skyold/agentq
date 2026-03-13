@@ -2438,7 +2438,7 @@ def save_ai_decision(
             from api.bot_routes import get_notification_config_dict
             from services.bot_event_service import enqueue_system_event, push_event_to_all_channels
             notif_config = get_notification_config_dict(db)
-            if notif_config.get("ai_trader", True):
+            if notif_config.get("ai_trader", True) and executed and operation and operation.lower() != "hold":
                 event_data = {
                     "trader_name": account.name,
                     "operation": operation.upper() if operation else "HOLD",
