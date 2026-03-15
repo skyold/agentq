@@ -196,7 +196,20 @@
     "forgotPassword": "Forgot Password?",
     "loginSuccess": "Login successful",
     "logoutSuccess": "Logout successful",
-    "pleaseLogin": "Please log in to use this feature"
+    "pleaseLogin": "Please log in to use this feature",
+    "username": "Username",
+    "usernameRequired": "Username is required",
+    "usernameLength": "Username must be 3-50 characters",
+    "passwordRequired": "Password is required",
+    "passwordLength": "Password must be at least 6 characters",
+    "registerSuccess": "Registration successful",
+    "loginFailed": "Login failed",
+    "registerFailed": "Registration failed",
+    "invalidCredentials": "Invalid username or password",
+    "usernameExists": "Username already exists"
+  },
+  "header": {
+    "ssoLogin": "SSO Login"
   },
   "dashboard": {
     "title": "Dashboard",

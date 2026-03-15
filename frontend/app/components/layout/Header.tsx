@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { User, LogOut, UserCog, ExternalLink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { useAuth } from '@/contexts/AuthContext'
 import { useCurrentExchangeInfo } from '@/contexts/ExchangeContext'
 import { getSignInUrl } from '@/lib/auth'
+import LoginDialog from '@/components/auth/LoginDialog'
 
 interface Account {
   id: number
@@ -33,9 +34,10 @@ interface HeaderProps {
 
 export default function Header({ title = 'Hyper Alpha Arena', currentAccount, showAccountSelector = false }: HeaderProps) {
   const { t } = useTranslation()
-  const { user, loading, authEnabled, membership, logout } = useAuth()
+  const { user, loading, authEnabled, membership, logout, login, register } = useAuth()
   const currentExchangeInfo = useCurrentExchangeInfo()
   const isVipMember = membership?.status === 'ACTIVE'
+  const [showLoginDialog, setShowLoginDialog] = useState(false)
 
   // Preload VIP icons so dropdown renders instantly
   useEffect(() => {
@@ -61,10 +63,13 @@ export default function Header({ title = 'Hyper Alpha Arena', currentAccount, sh
   }
 
   const handleSignUp = async () => {
-    const signInUrl = await getSignInUrl()
-    if (signInUrl) {
-      window.location.href = signInUrl
-    }
+    // Open local login dialog
+    setShowLoginDialog(true)
+  }
+
+  const handleLoginSuccess = () => {
+    // Refresh page to update state
+    window.location.reload()
   }
 
   return (
@@ -80,12 +85,10 @@ export default function Header({ title = 'Hyper Alpha Arena', currentAccount, sh
 
         {/* Right side controls - Hidden on mobile */}
         <div className="hidden md:flex items-center gap-3">
-          {authEnabled && (
-            <>
-              {loading ? (
-                <div className="w-20 h-9 bg-muted animate-pulse rounded-md" />
-              ) : user ? (
-                <DropdownMenu>
+          {loading ? (
+            <div className="w-20 h-9 bg-muted animate-pulse rounded-md" />
+          ) : user ? (
+            <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" className="relative h-9 w-9 rounded-full p-0">
                       <div className={`relative rounded-full ${isVipMember ? 'p-[3px] bg-gradient-to-br from-yellow-200 via-amber-500 to-orange-600 shadow-[0_0_18px_rgba(202,138,4,0.85)]' : ''}`}>
@@ -151,19 +154,39 @@ export default function Header({ title = 'Hyper Alpha Arena', currentAccount, sh
                   </DropdownMenuContent>
                 </DropdownMenu>
               ) : (
-                <Button
-                  onClick={handleSignUp}
-                  size="sm"
-                  className="px-4 py-2 text-sm font-medium"
-                >
-                  {t('header.signUp', 'Sign Up')}
-                </Button>
+                <>
+                  <Button
+                    onClick={handleSignUp}
+                    size="sm"
+                    className="px-4 py-2 text-sm font-medium"
+                  >
+                    {t('header.signUp', 'Sign Up')}
+                  </Button>
+                  {/* Casdoor SSO option (optional, can be removed if not needed) */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="px-4 py-2 text-sm font-medium"
+                    onClick={async () => {
+                      const signInUrl = await getSignInUrl()
+                      if (signInUrl) {
+                        window.location.href = signInUrl
+                      }
+                    }}
+                  >
+                    {t('header.ssoLogin', 'SSO Login')}
+                  </Button>
+                </>
               )}
-            </>
-          )}
         </div>
       </div>
 
+      {/* Login Dialog */}
+      <LoginDialog
+        isOpen={showLoginDialog}
+        onClose={() => setShowLoginDialog(false)}
+        onLoginSuccess={handleLoginSuccess}
+      />
     </header>
   )
 }

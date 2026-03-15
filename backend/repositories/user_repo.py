@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from typing import Optional
 from database.models import User, UserAuthSession
-import hashlib
+import bcrypt
 import secrets
 import datetime
 
@@ -80,8 +80,10 @@ def update_user(
 
 
 def _hash_password(password: str) -> str:
-    """Hash password using SHA256"""
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Hash password using bcrypt"""
+    salt = bcrypt.gensalt(rounds=12)
+    hashed = bcrypt.hashpw(password.encode(), salt)
+    return hashed.decode()
 
 
 def set_user_password(db: Session, user_id: int, password: str) -> Optional[User]:
@@ -90,19 +92,19 @@ def set_user_password(db: Session, user_id: int, password: str) -> Optional[User
     if not user:
         return None
     
-    user.password = _hash_password(password)
+    user.password_hash = _hash_password(password)
     db.commit()
     db.refresh(user)
     return user
 
 
 def verify_user_password(db: Session, user_id: int, password: str) -> bool:
-    """Verify user trading password"""
+    """Verify user password using bcrypt"""
     user = db.query(User).filter(User.id == user_id).first()
-    if not user or not user.password:
+    if not user or not user.password_hash:
         return False
     
-    return user.password == _hash_password(password)
+    return bcrypt.checkpw(password.encode(), user.password_hash.encode())
 
 
 def user_has_password(db: Session, user_id: int) -> bool:

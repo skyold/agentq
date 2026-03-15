@@ -3,7 +3,7 @@
 import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from 'react'
 import Cookies from 'js-cookie'
 import { getUserInfo, loadAuthConfig, type User, isTokenExpiringSoon, refreshAccessToken, getTokenExpiryTime } from '@/lib/auth'
-import { getMembershipInfo, type MembershipInfo } from '@/lib/api'
+import { getMembershipInfo, type MembershipInfo, loginUser, registerUser, logoutUser } from '@/lib/api'
 
 interface AuthContextType {
   user: User | null
@@ -13,6 +13,8 @@ interface AuthContextType {
   membershipLoading: boolean
   setUser: (user: User | null) => void
   logout: () => void
+  login: (username: string, password: string) => Promise<boolean>
+  register: (username: string, email: string, password: string) => Promise<boolean>
   refreshMembership: () => Promise<void>
 }
 
@@ -265,8 +267,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const login = async (username: string, password: string): Promise<boolean> => {
+    try {
+      const response = await loginUser(username, password)
+      
+      // Save session_token to cookie
+      Cookies.set('session_token', response.session_token, { expires: 7 })
+      
+      // Save user info
+      Cookies.set('arena_user', JSON.stringify(response.user), { expires: 7 })
+      
+      // Update user state
+      setUser(response.user)
+      
+      console.log('[AuthContext] Local login successful')
+      return true
+    } catch (error) {
+      console.error('[AuthContext] Login failed:', error)
+      return false
+    }
+  }
+
+  const register = async (username: string, email: string, password: string): Promise<boolean> => {
+    try {
+      const response = await registerUser(username, email, password)
+      
+      // Save session_token to cookie
+      Cookies.set('session_token', response.session_token, { expires: 7 })
+      
+      // Save user info
+      Cookies.set('arena_user', JSON.stringify(response.user), { expires: 7 })
+      
+      // Update user state
+      setUser(response.user)
+      
+      console.log('[AuthContext] Registration successful')
+      return true
+    } catch (error) {
+      console.error('[AuthContext] Registration failed:', error)
+      return false
+    }
+  }
+
   const logout = async () => {
-    // Clear backend membership subscription first
+    // Clear backend session first
+    const sessionToken = Cookies.get('session_token')
+    if (sessionToken) {
+      try {
+        await logoutUser(sessionToken)
+        console.log('[AuthContext] Backend session revoked')
+      } catch (e) {
+        console.warn('[AuthContext] Failed to revoke backend session:', e)
+      }
+    }
+
+    // Clear backend membership subscription
     try {
       await fetch('/api/users/clear-membership', { method: 'POST' })
       console.log('[AuthContext] Backend membership cleared')
@@ -274,12 +329,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.warn('[AuthContext] Failed to clear backend membership:', e)
     }
 
-    // Local logout: clear Arena cookies and state
-    // Casdoor session remains active, but next login will show account selection
-    // because we use prompt=select_account in getSignInUrl()
+    // Clear all cookies
+    Cookies.remove('session_token')
     Cookies.remove('arena_token')
     Cookies.remove('arena_refresh_token')
     Cookies.remove('arena_user')
+    
+    // Clear state
     setUser(null)
     setMembership(null)
 
@@ -302,6 +358,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       membershipLoading,
       setUser,
       logout,
+      login,
+      register,
       refreshMembership
     }}>
       {children}

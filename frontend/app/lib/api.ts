@@ -380,6 +380,21 @@ export async function loginUser(username: string, password: string): Promise<Use
   return response.json()
 }
 
+export async function registerUser(username: string, email: string | undefined, password: string): Promise<UserAuthResponse> {
+  const response = await apiRequest('/users/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, email, password }),
+  })
+  return response.json()
+}
+
+export async function logoutUser(sessionToken: string): Promise<void> {
+  await apiRequest('/users/logout', {
+    method: 'POST',
+    body: JSON.stringify({ session_token: sessionToken }),
+  })
+}
+
 export async function getUserProfile(sessionToken: string): Promise<User> {
   const response = await apiRequest(`/users/profile?session_token=${sessionToken}`)
   return response.json()

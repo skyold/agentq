@@ -11,7 +11,8 @@ from database.connection import SessionLocal
 from database.models import User, UserExchangeConfig, UserSubscription
 from repositories.user_repo import (
     create_user, get_user, get_user_by_username,
-    update_user, create_auth_session, verify_auth_session
+    update_user, create_auth_session, verify_auth_session,
+    verify_user_password, revoke_auth_session
 )
 from datetime import datetime
 from pydantic import BaseModel
@@ -32,9 +33,20 @@ def get_db():
         db.close()
 
 
-@router.post("/register", response_model=UserOut)
+@router.post("/register", response_model=UserAuthResponse)
 async def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
+    """Register a new user and create authentication session"""
     try:
+        # Validate input
+        if not user_data.username or len(user_data.username.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Username is required")
+        
+        if len(user_data.username) < 3 or len(user_data.username) > 50:
+            raise HTTPException(status_code=400, detail="Username must be 3-50 characters")
+        
+        if not user_data.password or len(user_data.password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+        
         # Check if username exists
         existing = get_user_by_username(db, user_data.username)
         if existing:
@@ -48,28 +60,45 @@ async def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
             password=user_data.password
         )
         
-        return UserOut(
-            id=user.id,
-            username=user.username,
-            email=user.email,
-            is_active=user.is_active == "true"
+        # Create auth session
+        session = create_auth_session(db, user.id)
+        if not session:
+            raise HTTPException(status_code=500, detail="Failed to create session")
+        
+        return UserAuthResponse(
+            user=UserOut(
+                id=user.id,
+                username=user.username,
+                email=user.email,
+                is_active=user.is_active == "true"
+            ),
+            session_token=session.session_token,
+            expires_at=session.expires_at.isoformat()
         )
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"User registration failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"User registration failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
 
 
 @router.post("/login", response_model=UserAuthResponse)
 async def login_user(login_data: UserLogin, db: Session = Depends(get_db)):
+    """User login with username and password"""
     try:
-        # For now, just verify username exists and create session
-        # Password verification can be implemented later
+        # Find user
         user = get_user_by_username(db, login_data.username)
         if not user:
             raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Verify password
+        if not verify_user_password(db, user.id, login_data.password):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Check if user is active
+        if user.is_active != "true":
+            raise HTTPException(status_code=401, detail="Account is disabled")
         
         # Create auth session
         session = create_auth_session(db, user.id)
@@ -91,7 +120,23 @@ async def login_user(login_data: UserLogin, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         logger.error(f"User login failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"User login failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
+
+
+@router.post("/logout")
+async def logout_user(session_token: str, db: Session = Depends(get_db)):
+    """User logout - revoke authentication session"""
+    try:
+        success = revoke_auth_session(db, session_token)
+        if success:
+            return {"status": "success", "message": "Logged out successfully"}
+        else:
+            raise HTTPException(status_code=400, detail="Invalid session token")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"User logout failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")
 
 
 @router.get("/profile", response_model=UserOut)
